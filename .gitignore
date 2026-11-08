@@ -1,0 +1,12 @@
+.pio/
+.vscode/
+include/secrets.h
+# your own images stay local
+data/www/ribbons/*
+!data/www/ribbons/legend.example.json
+data/www/trainers/*
+__pycache__/
+dist/
+# generated: the standalone page embeds your local image packs
+dexframe.html
+firmware/
