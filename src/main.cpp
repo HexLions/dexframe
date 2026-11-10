@@ -16,8 +16,8 @@
 #include <Update.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <GxEPD2_BW.h>
-#include <GxEPD2_3C.h>
+#include "panel.h"
+#include "frame_codec.h"
 #include "dexframe_types.h"
 #include "setup_page.h"
 // Optional compile-time defaults; Wi-Fi is normally set from the setup page (stored in NVS).
@@ -33,7 +33,8 @@
 #ifndef DEVICE_HOSTNAME
 #define DEVICE_HOSTNAME "dexframe"
 #endif
-#define FW_VERSION "1.4.0"
+#define FW_VERSION "1.5.0"
+#define API_LEVEL 2      // 2: DXF1 frames, panel descriptor in /api/info
 #define AP_NAME "DexFrame-Setup"
 
 // ---- wiring (ESP32 DevKit, VSPI): SCK=18 MOSI=23 CS=5 DC=17 RST=16 BUSY=4 ----
@@ -50,21 +51,17 @@
 #define BAT_DIVIDER 2.0f
 #define BAT_LOW_MV  3500
 
-#if defined(EPD_BWR)
-GxEPD2_3C<GxEPD2_420c_GDEY042Z98, GxEPD2_420c_GDEY042Z98::HEIGHT>
-  display(GxEPD2_420c_GDEY042Z98(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
-static const bool HAS_RED = true;
-#else
-GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT>
-  display(GxEPD2_420_GDEY042T81(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
-static const bool HAS_RED = false;
-#endif
+PANEL_DRIVER<PANEL_CLASS, PANEL_CLASS::HEIGHT / PANEL_PAGES>
+  display(PANEL_CLASS(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
-constexpr int W = 400, H = 300;
-constexpr size_t PLANE = W * H / 8;      // 15000 bytes, 1 bit/px, MSB first
-constexpr size_t FRAME = PLANE * 2;      // black plane + red plane (red ignored on B/W)
+constexpr int W = PANEL_CLASS::WIDTH, H = PANEL_CLASS::HEIGHT;
+constexpr uint8_t FRAME_BPP = (PANEL_INKS > 0xF) ? 3 : (PANEL_INKS > 0x3) ? 2 : 1;
+const size_t FRAME_MAX = dxf::maxSize(W, H, 4);   // upload size cap
+// Pages stored by firmware <= 1.4.0: two raw 1-bit planes (black, then red), 400x300 only.
+constexpr size_t LEGACY_PLANE = (size_t)W * H / 8, LEGACY_FRAME = LEGACY_PLANE * 2;
+constexpr bool LEGACY_OK = LEGACY_FRAME <= 30000;
 constexpr size_t MAX_STATE = 64 * 1024;
-constexpr int MAX_SLOTS = 28;            // fits the 1.4 MB LittleFS next to the web UI
+constexpr int MAX_SLOTS = 48;            // hard cap; what really fits is in /api/info (pageBudget)
 constexpr int FULL_EVERY = 10;           // B/W: full refresh after this many partial ones
 const char* DEFAULT_TZ = "CET-1CEST,M3.5.0,M10.5.0/3";
 
@@ -178,43 +175,42 @@ void loadGlyphs() {
   f.close();
 }
 
-inline void setPx(uint8_t* plane, int x, int y, bool on) {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  size_t i = (size_t)y * W + x;
-  if (on) plane[i >> 3] |= 0x80 >> (i & 7); else plane[i >> 3] &= ~(0x80 >> (i & 7));
-}
-
-// Writes the day count into the frame buffer, inside the overlay box.
-bool renderOverlay(uint8_t* buf, const Overlay& o) {
+// Layout of the day count inside the overlay box (false = nothing to draw).
+bool layoutOverlay(const Overlay& o, OverlayRun& r) {
   int32_t today = todayLocal();
   if (!o.ok || today < 0 || !glyphs.bits || glyphs.n < 10) return false;
   long days = today - o.start;
   if (days < 0) days = 0;
   char digits[16];
   snprintf(digits, sizeof digits, "%ld", days);
-  int idx[24], k = 0, len = strlen(digits);
+  int len = strlen(digits);
+  r.k = 0;
   for (int i = 0; i < len; i++) {
-    if (o.sep && glyphs.n > 10 && i > 0 && (len - i) % 3 == 0) idx[k++] = 10;
-    idx[k++] = digits[i] - '0';
+    if (o.sep && glyphs.n > 10 && i > 0 && (len - i) % 3 == 0) r.idx[r.k++] = 10;
+    r.idx[r.k++] = digits[i] - '0';
   }
   int total = 0;
-  for (int i = 0; i < k; i++) total += glyphs.adv[idx[i]];
-  int x = o.align == 2 ? o.x + o.w - total : o.align == 1 ? o.x + (o.w - total) / 2 : o.x;
-  for (int yy = o.y; yy < o.y + o.h; yy++)              // clear the box
-    for (int xx = o.x; xx < o.x + o.w; xx++) { setPx(buf, xx, yy, false); setPx(buf + PLANE, xx, yy, false); }
-  uint8_t* plane = (o.color == 1 && HAS_RED) ? buf + PLANE : buf;
+  for (int i = 0; i < r.k; i++) total += glyphs.adv[r.idx[i]];
+  r.x = o.align == 2 ? o.x + o.w - total : o.align == 1 ? o.x + (o.w - total) / 2 : o.x;
+  return true;
+}
+
+// Draws the day count over the page, inside its box. Call between firstPage/nextPage.
+void paintOverlay(const Overlay& o, const OverlayRun& r) {
+  display.fillRect(o.x, o.y, o.w, o.h, GxEPD_WHITE);
+  uint16_t col = inkColor((uint8_t)(o.color + 1));     // overlay colour: 0 black, 1 red, ...
   size_t stride = (glyphs.gw + 7) / 8;
-  for (int i = 0; i < k; i++) {
-    const uint8_t* g = glyphs.bits + (size_t)idx[i] * glyphs.gh * stride;
-    for (int gy = 0; gy < glyphs.gh && o.y + gy < o.y + o.h; gy++)
+  int x = r.x;
+  for (int i = 0; i < r.k; i++) {
+    const uint8_t* g = glyphs.bits + (size_t)r.idx[i] * glyphs.gh * stride;
+    for (int gy = 0; gy < glyphs.gh && gy < o.h; gy++)
       for (int gx = 0; gx < glyphs.gw; gx++)
         if (g[gy * stride + (gx >> 3)] & (0x80 >> (gx & 7))) {
           int px = x - 2 + gx;                           // glyphs carry a 2 px left pad
-          if (px >= o.x && px < o.x + o.w) setPx(plane, px, o.y + gy, true);
+          if (px >= o.x && px < o.x + o.w) display.drawPixel(px, o.y + gy, col);
         }
-    x += glyphs.adv[idx[i]];
+    x += glyphs.adv[r.idx[i]];
   }
-  return true;
 }
 
 // ---------------------------------------------------------------- battery
@@ -229,34 +225,76 @@ int batteryMv() {
 }
 
 // Small low-battery mark, bottom-left corner (only when sensing is wired).
-void markLowBattery(uint8_t* buf) {
-  int mv = batteryMv();
-  if (mv < 1000 || mv > BAT_LOW_MV) return;   // <1 V = no battery connected
-  const int x0 = 4, y0 = 289;
-  for (int x = x0; x < x0 + 14; x++) { setPx(buf, x, y0, true); setPx(buf, x, y0 + 7, true); }
-  for (int y = y0; y < y0 + 8; y++) { setPx(buf, x0, y, true); setPx(buf, x0 + 13, y, true); }
-  for (int y = y0 + 2; y < y0 + 6; y++) { setPx(buf, x0 + 14, y, true); setPx(buf, x0 + 2, y, true); }
+void paintLowBattery() {
+  const int x0 = 4, y0 = H - 11;
+  display.drawRect(x0, y0, 14, 8, GxEPD_BLACK);
+  display.drawFastVLine(x0 + 14, y0 + 2, 4, GxEPD_BLACK);
+  display.drawFastVLine(x0 + 2, y0 + 2, 4, GxEPD_BLACK);
 }
 
 // ---------------------------------------------------------------- drawing
-// full=true: whole-screen refresh. full=false (B/W only): partial refresh of the
-// overlay box, used for the daily counter update without the full-screen flash.
+// Checks a stored/uploaded page: DXF1 for this panel's size with a complete pixel
+// stream, or (400x300 panels) a raw two-plane page from firmware <= 1.4.0.
+bool validFrame(File& f, bool& legacy) {
+  legacy = false;
+  size_t size = f.size();
+  uint8_t hdr[dxf::HEADER_SIZE];
+  f.seek(0);
+  dxf::Header h;
+  if (f.read(hdr, sizeof hdr) == sizeof hdr && dxf::parseHeader(hdr, sizeof hdr, h)) {
+    if (h.w != W || h.h != H || size > FRAME_MAX) return false;
+    return dxf::decode([&](uint8_t* b, size_t n) { return (size_t)f.read(b, n); },
+                       (uint32_t)W * H, h.bpp, [](uint8_t, uint32_t) {});
+  }
+  legacy = LEGACY_OK && size == LEGACY_FRAME;
+  return legacy;
+}
+
+// Streams a DXF1 page to the display, a run at a time (white is the cleared background).
+void paintFrame(File& f, uint8_t bpp) {
+  f.seek(dxf::HEADER_SIZE);
+  uint32_t pos = 0;
+  dxf::decode([&](uint8_t* b, size_t n) { return (size_t)f.read(b, n); }, (uint32_t)W * H, bpp,
+              [&](uint8_t ink, uint32_t n) {
+                if (ink) {
+                  uint16_t col = inkColor(ink);
+                  int x = pos % W, y = pos / W;
+                  for (uint32_t i = 0; i < n; i++) {
+                    display.drawPixel(x, y, col);
+                    if (++x == W) { x = 0; y++; }
+                  }
+                }
+                pos += n;
+              });
+}
+
+// full=true: whole-screen refresh. full=false (panels with a fast partial refresh):
+// only the counter box is refreshed, without the full-screen flash.
 bool drawEntry(int entry, bool full) {
   int slot = entrySlot(entry);
   File f = LittleFS.open(slotPath(slot, ".bin"), "r");
   if (!f) return false;
-  if (f.size() != FRAME) { f.close(); return false; }
-  uint8_t* buf = (uint8_t*)malloc(FRAME);
-  if (!buf) { f.close(); return false; }
-  size_t n = f.read(buf, FRAME);
-  f.close();
-  if (n != FRAME) { free(buf); return false; }
+  bool legacy = false;
+  uint8_t hdr[dxf::HEADER_SIZE];
+  dxf::Header h;
+  if (!(f.read(hdr, sizeof hdr) == sizeof hdr && dxf::parseHeader(hdr, sizeof hdr, h) && h.w == W && h.h == H)) {
+    legacy = LEGACY_OK && f.size() == LEGACY_FRAME;
+    if (!legacy) { f.close(); return false; }
+  }
+  uint8_t* planes = nullptr;
+  if (legacy) {
+    planes = (uint8_t*)malloc(LEGACY_FRAME);
+    f.seek(0);
+    if (!planes || f.read(planes, LEGACY_FRAME) != LEGACY_FRAME) { free(planes); f.close(); return false; }
+  }
 
   Overlay ov = readOverlay(slot);
-  bool hasOv = renderOverlay(buf, ov);
-  markLowBattery(buf);
+  OverlayRun run;
+  bool hasOv = layoutOverlay(ov, run);
+  int mv = batteryMv();
+  bool lowBat = mv >= 1000 && mv <= BAT_LOW_MV;   // <1 V = no battery connected
 
-  bool partial = !full && !HAS_RED && hasOv && rtcPartials < FULL_EVERY;
+  bool partial = !full && PANEL_PARTIAL && hasOv && rtcPartials < FULL_EVERY;
   busy = true;
   if (partial) {
     display.setPartialWindow(ov.x & ~7, ov.y, ((ov.x + ov.w + 7) & ~7) - (ov.x & ~7), ov.h);
@@ -268,14 +306,21 @@ bool drawEntry(int entry, bool full) {
   display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
-    display.drawBitmap(0, 0, buf, W, H, GxEPD_BLACK);
-    if (HAS_RED) display.drawBitmap(0, 0, buf + PLANE, W, H, GxEPD_RED);
+    if (legacy) {
+      display.drawBitmap(0, 0, planes, W, H, GxEPD_BLACK);
+      if (panelHasInk(2)) display.drawBitmap(0, 0, planes + LEGACY_PLANE, W, H, GxEPD_RED);
+    } else {
+      paintFrame(f, h.bpp);
+    }
+    if (hasOv) paintOverlay(ov, run);
+    if (lowBat) paintLowBattery();
   } while (display.nextPage());
   // hibernate loses the controller RAM (next update is a full refresh); powerOff keeps it,
   // so later partial refreshes of the counter are clean. Deep sleep always hibernates.
   if (sleepEnabled) display.hibernate(); else display.powerOff();
   busy = false;
-  free(buf);
+  free(planes);
+  f.close();
   rtcDrawnDay = todayLocal();
   return true;
 }
@@ -332,11 +377,17 @@ void handleUpload() {
       break;
     }
     case UPLOAD_FILE_WRITE:
-      if (uploadOk && uploadFile.write(up.buf, up.currentSize) != up.currentSize) uploadOk = false;
+      if (uploadOk && (up.totalSize + up.currentSize > FRAME_MAX ||
+                       uploadFile.write(up.buf, up.currentSize) != up.currentSize)) uploadOk = false;
       break;
     case UPLOAD_FILE_END:
       if (uploadFile) uploadFile.close();
-      if (uploadPath.startsWith("/f") && up.totalSize != FRAME) uploadOk = false;
+      if (uploadOk && uploadPath.startsWith("/f")) {
+        File chk = LittleFS.open(uploadPath + ".tmp", "r");
+        bool legacy;
+        uploadOk = chk && validFrame(chk, legacy);
+        if (chk) chk.close();
+      }
       if (uploadPath == "/glyphs" && (up.totalSize < 3 || up.totalSize > 16384)) uploadOk = false;
       break;
     default:  // aborted
@@ -411,26 +462,48 @@ void handleRotation() {
   server.send(202);
 }
 
-// How many pages fit in LittleFS next to the web UI and your images: each page
-// takes 8 blocks (30000 B) + 1 for its counter box, plus room for one .tmp upload.
-int slotsFit() {
-  const long per = 9 * 4096L;
-  long frames = 0;
+// Bytes available for pages: free space plus what the stored pages occupy now (they
+// get replaced), minus a reserve for the saved card data and file-system metadata.
+// Sizes count in 4096-byte blocks; each page also needs one block for its counter box.
+constexpr long FS_BLOCK = 4096;
+long pageBudget() {
+  long held = 0;
   File root = LittleFS.open("/");
   for (File f = root.openNextFile(); f; f = root.openNextFile()) {
     String n = f.name();
     if (n.startsWith("/")) n = n.substring(1);
-    if (n.startsWith("f") && n.endsWith(".bin")) frames++;
+    if (n.startsWith("f") && (n.endsWith(".bin") || n.endsWith(".ov")))
+      held += ((long)f.size() + FS_BLOCK - 1) / FS_BLOCK * FS_BLOCK;
   }
-  long avail = (long)LittleFS.totalBytes() - (long)LittleFS.usedBytes() + frames * per - 8 * 4096L - 4 * 4096L;
-  return constrain((int)(avail / per), 1, MAX_SLOTS);
+  long avail = (long)LittleFS.totalBytes() - (long)LittleFS.usedBytes() + held - 12 * FS_BLOCK;
+  return avail > 0 ? avail : 0;
+}
+
+// Pages that fit if none of them compresses (two bits per pixel, as before 1.5.0).
+int slotsFit() {
+  const long per = ((long)W * H / 4 + FS_BLOCK - 1) / FS_BLOCK * FS_BLOCK + FS_BLOCK;
+  return constrain((int)((pageBudget() - per) / per), 1, MAX_SLOTS);
+}
+
+String paletteJson() {
+  String j = "[";
+  for (uint8_t i = 0; i < dxf::INK_COUNT; i++)
+    if (panelHasInk(i)) { if (j.length() > 1) j += ','; j += '"'; j += INK_NAMES[i]; j += '"'; }
+  return j + "]";
 }
 
 void handleInfo() {
   touch();
   int mv = batteryMv();
   String j = "{\"w\":" + String(W) + ",\"h\":" + String(H) +
-             ",\"red\":" + (HAS_RED ? "true" : "false") +
+             ",\"red\":" + (panelHasInk(2) ? "true" : "false") +
+             ",\"api\":" + String(API_LEVEL) +
+             ",\"panel\":\"" PANEL_ID "\"" +
+             ",\"panelName\":\"" PANEL_NAME "\"" +
+             ",\"palette\":" + paletteJson() +
+             ",\"bpp\":" + String(FRAME_BPP) +
+             ",\"partial\":" + (PANEL_PARTIAL ? "true" : "false") +
+             ",\"pageBudget\":" + String(pageBudget()) +
              ",\"maxSlots\":" + String(MAX_SLOTS) +
              ",\"slotsFit\":" + String(slotsFit()) +
              ",\"count\":" + String(slotCount) +

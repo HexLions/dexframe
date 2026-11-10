@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 ap = argparse.ArgumentParser()
-ap.add_argument('env', choices=['bw', 'bwr'])
+ap.add_argument('env', help='panel build: a PlatformIO env name (bw, bwr, bwry, ...)')
 ap.add_argument('--build', type=Path, required=True, help='folder with bootloader.bin, partitions.bin, firmware.bin')
 ap.add_argument('--fs', type=Path, required=True, help='LittleFS image of data/ (0x160000 bytes)')
 ap.add_argument('--boot-app0', type=Path, required=True)

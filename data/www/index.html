@@ -106,6 +106,21 @@ details.adv .grid{margin-top:8px}
 "use strict";
 const W = 400, H = 300, PLANE = W * H / 8;
 
+// Inks, by global code (the same numbers the firmware uses, see include/frame_codec.h).
+const INKS = [
+  {name: 'white', rgb: [255, 255, 255]}, {name: 'black', rgb: [17, 17, 17]}, {name: 'red', rgb: [200, 30, 30]},
+  {name: 'yellow', rgb: [236, 196, 20]}, {name: 'blue', rgb: [30, 70, 180]}, {name: 'green', rgb: [40, 130, 60]},
+  {name: 'orange', rgb: [225, 120, 30]}];
+// Panels this page knows; a connected board describes its own in /api/info.
+const PANELS = {
+  bw: {palette: ['white', 'black']},
+  bwr: {palette: ['white', 'black', 'red']},
+  bwry: {palette: ['white', 'black', 'red', 'yellow']}};
+const panelOf = s => PANELS[s.panel] || PANELS.bw;
+const hasInk = (s, name) => panelOf(s).palette.includes(name);
+// Bits per pixel of a frame for a palette: enough for its highest ink code.
+const paletteBpp = pal => { const top = Math.max(...pal.map(n => INKS.findIndex(k => k.name === n))); return top > 3 ? 3 : top > 1 ? 2 : 1; };
+
 // ---------- i18n ----------
 // Two independent languages: `uiLang` for this page, `dispLang` for what the
 // e-paper shows. Add a language by adding a block to LANGS, UI, DISP and TYPE_NAMES.
@@ -145,7 +160,7 @@ const UI = {
     bd_title: 'Medaglie ({n}/8)', bd_none: 'Nessuna icona scelta: sul display {n} caselle piene (campo "Medaglie").',
     rg_kanto: 'Kanto', rg_johto: 'Johto', rg_hoenn: 'Hoenn', rg_sinnoh: 'Sinnoh', rg_unova: 'Unima', rg_kalos: 'Kalos', rg_galar: 'Galar', rg_paldea: 'Paldea', rg_other: 'Altre',
     bd_clear: 'Togli tutte', pg_team: 'Squadra', k_web: 'PokeAPI', k_own: 'tua',
-    shiny: 'Cromatico', panel: 'Pannello', pn_bw: 'Bianco/Nero', pn_bwr: 'Bianco/Nero/Rosso',
+    shiny: 'Cromatico', panel: 'Pannello', pn_bw: 'Bianco/Nero', pn_bwr: 'Bianco/Nero/Rosso', pn_bwry: 'Bianco/Nero/Rosso/Giallo',
     dither: 'Sfumature sprite', dt_blocks: 'Retino dentro il pixel', dt_threshold: 'Solo soglia',
     contrast: 'Contrasto (-50..50)', interval: 'Cambio pagina (min, 0 = solo tasto)', dispLang: 'Lingua sul display',
     deviceUrl: 'Indirizzo display (solo se apri questo file dal PC, es. http://dexframe.local)', connect: 'Collega',
@@ -162,7 +177,7 @@ const UI = {
     pk_allgen: 'Tutte le gen', pk_only: 'Solo selezionati',
     pk_count: '{n} risultati · {s} selezionati · clic per aggiungere/togliere', k_ribbon: 'Fiocco', k_mark: 'Mark',
     hint: 'Immagini fiocchi (✗ = non trovata o bloccata da CORS, uso la coccarda):', embedded: 'incorporata',
-    st_connected: 'Connesso: {w}×{h} {mode}, pagina {c}/{n}', mode_bw: 'B/N', mode_bwr: 'B/N/R',
+    st_connected: 'Connesso: {w}×{h} {mode}, pagina {c}/{n}',
     st_preview: 'Modalità anteprima (nessun DexFrame raggiungibile)', st_saved_browser: 'Salvato solo nel browser',
     st_saved: 'Dati salvati sul display', st_save_err: 'Errore salvataggio: {e}', st_no_device: 'Nessun display connesso',
     st_no_pages: 'Nessuna pagina attiva', st_sending: 'Invio pagina {i}/{n}…', st_page: 'pagina {i}',
@@ -176,6 +191,7 @@ const UI = {
     col_save: 'Salva il Pokémon dell\'editor nella collezione', col_load: 'Modifica', col_update: 'Sovrascrivi',
     col_preview: 'Anteprima', col_empty: 'Collezione vuota: compila il Pokémon nelle sezioni sopra e premi "Salva…".',
     col_info: '{n} Pokémon in collezione · {p} pagine nella rotazione (+{d} del giorno) · max {m} sul display',
+    st_sent_kb: '{kb} KB',
     col_loaded: '{n} caricato nell\'editor', col_saved: '{n} salvato nella collezione', col_upd: '{n} aggiornato',
     col_confirm: 'Togliere {n} dalla collezione?',
     sd_title: 'Importa set da Showdown', sd_ph: 'Incolla un set in formato export di Pokémon Showdown…', sd_go: 'Importa set',
@@ -183,7 +199,9 @@ const UI = {
     sd_busy: 'Import da PokeAPI…', sd_ok: 'Set importato: {n}', sd_err: 'Import fallito: {e}',
     sleep: 'Risparmio energetico (deep sleep, per batteria)', awake: 'Minuti online dopo un tasto/accensione',
     tz: 'Fuso orario (POSIX TZ, default Italia)',
-    st_too_many: 'Troppe pagine: {n}, il display ne tiene {m}', st_glyphs: 'Invio cifre del contatore…',
+    st_too_many: 'Troppe pagine: {n}, il display ne tiene {m}',
+    st_too_big: 'Le pagine occupano {n} KB, sul display ce ne stanno {m}: togline qualcuna', st_rendering: 'Preparo pagina {i}/{n}…',
+    st_size: 'Questa versione dell\'interfaccia disegna pagine {w}×{h}: il pannello è {pw}×{ph}', st_glyphs: 'Invio cifre del contatore…',
     st_bat: 'batteria {v} V', st_old_fw: 'firmware vecchio: niente contatore giorni (aggiorna il firmware)',
     pk_title: 'Importa da file PKHeX (.pk4 – .pk9)', pk_pick: 'Scegli file .pk…',
     pk_info: 'Esporta il Pokémon da PKHeX (clic destro sullo slot → Esporta/Salva file) e caricalo qui. Legge specie, soprannome, livello, natura, abilità, strumento, mosse, statistiche, cromatico, AO, ID, data e luogo d\'incontro, carattere e fiocchi. Il file resta nel browser.',
@@ -241,7 +259,7 @@ const UI = {
     bd_title: 'Badges ({n}/8)', bd_none: 'No icons chosen: the display shows {n} filled boxes ("Badges" field).',
     rg_kanto: 'Kanto', rg_johto: 'Johto', rg_hoenn: 'Hoenn', rg_sinnoh: 'Sinnoh', rg_unova: 'Unova', rg_kalos: 'Kalos', rg_galar: 'Galar', rg_paldea: 'Paldea', rg_other: 'Others',
     bd_clear: 'Clear', pg_team: 'Team', k_web: 'PokeAPI', k_own: 'yours',
-    shiny: 'Shiny', panel: 'Panel', pn_bw: 'Black/White', pn_bwr: 'Black/White/Red',
+    shiny: 'Shiny', panel: 'Panel', pn_bw: 'Black/White', pn_bwr: 'Black/White/Red', pn_bwry: 'Black/White/Red/Yellow',
     dither: 'Sprite shading', dt_blocks: 'Dither inside each pixel', dt_threshold: 'Threshold only',
     contrast: 'Contrast (-50..50)', interval: 'Page change (min, 0 = button only)', dispLang: 'Display language',
     deviceUrl: 'Display address (only when opening this file from a PC, e.g. http://dexframe.local)', connect: 'Connect',
@@ -258,7 +276,7 @@ const UI = {
     pk_allgen: 'All gens', pk_only: 'Selected only',
     pk_count: '{n} results · {s} selected · click to add/remove', k_ribbon: 'Ribbon', k_mark: 'Mark',
     hint: 'Ribbon images (✗ = not found or blocked by CORS, using the rosette):', embedded: 'embedded',
-    st_connected: 'Connected: {w}×{h} {mode}, page {c}/{n}', mode_bw: 'B/W', mode_bwr: 'B/W/R',
+    st_connected: 'Connected: {w}×{h} {mode}, page {c}/{n}',
     st_preview: 'Preview mode (no DexFrame reachable)', st_saved_browser: 'Saved in this browser only',
     st_saved: 'Data saved on the display', st_save_err: 'Save error: {e}', st_no_device: 'No display connected',
     st_no_pages: 'No active pages', st_sending: 'Sending page {i}/{n}…', st_page: 'page {i}',
@@ -272,6 +290,7 @@ const UI = {
     col_save: 'Save the editor Pokémon to the collection', col_load: 'Edit', col_update: 'Overwrite',
     col_preview: 'Preview', col_empty: 'Empty collection: fill in the Pokémon in the sections above and press "Save…".',
     col_info: '{n} Pokémon in the collection · {p} pages in rotation (+{d} of the day) · max {m} on the display',
+    st_sent_kb: '{kb} KB',
     col_loaded: '{n} loaded into the editor', col_saved: '{n} saved to the collection', col_upd: '{n} updated',
     col_confirm: 'Remove {n} from the collection?',
     sd_title: 'Import Showdown set', sd_ph: 'Paste a set in Pokémon Showdown export format…', sd_go: 'Import set',
@@ -279,7 +298,9 @@ const UI = {
     sd_busy: 'Importing from PokeAPI…', sd_ok: 'Set imported: {n}', sd_err: 'Import failed: {e}',
     sleep: 'Power saving (deep sleep, for battery)', awake: 'Minutes online after a button press/power-on',
     tz: 'Time zone (POSIX TZ, default Italy)',
-    st_too_many: 'Too many pages: {n}, the display holds {m}', st_glyphs: 'Sending counter digits…',
+    st_too_many: 'Too many pages: {n}, the display holds {m}',
+    st_too_big: 'The pages take {n} KB, the display has room for {m}: remove some', st_rendering: 'Preparing page {i}/{n}…',
+    st_size: 'This version of the interface draws {w}×{h} pages: the panel is {pw}×{ph}', st_glyphs: 'Sending counter digits…',
     st_bat: 'battery {v} V', st_old_fw: 'old firmware: no day counter (update the firmware)',
     pk_title: 'Import from a PKHeX file (.pk4 – .pk9)', pk_pick: 'Choose .pk file…',
     pk_info: 'Export the Pokémon from PKHeX (right-click the slot → Export/Save file) and load it here. Reads species, nickname, level, nature, ability, held item, moves, stats, shininess, OT, ID, met date and location, characteristic and ribbons. The file stays in the browser.',
@@ -429,7 +450,7 @@ const GROUPS = [
   ['display', [['dispLang','dispLang','select',langOpts],
     ['style','style','select',() => Object.keys(SPRITES).map(k => [k, t('sp_' + k)])],
     ['shiny','shiny','checkbox'],
-    ['panel','panel','select',() => [['bw', t('pn_bw')],['bwr', t('pn_bwr')]]],
+    ['panel','panel','select',() => Object.keys(PANELS).map(k => [k, panelLabel(k)])],
     ['dither','dither','select',() => [['blocks', t('dt_blocks')],['threshold', t('dt_threshold')]]],
     ['contrast','contrast','number'],['interval','interval','number'],['deviceUrl','deviceUrl','text','wide'],
     ['sleep','sleep','checkbox','wide'],['awake','awake','number'],['tz','tz','text','adv']]],
@@ -1485,7 +1506,7 @@ function canvasToInk(ctx, hasRed) {
 
 // s: data to draw (state, or state + a collection card); idx/total: page dots.
 async function renderPage(key, s = state, idx, total) {
-  const hasRed = s.panel === 'bwr', acc = hasRed ? '#f00' : BLACK;
+  const hasRed = hasInk(s, 'red'), acc = hasRed ? '#f00' : BLACK;
   if (idx == null) {
     total = totalEntries();
     idx = key === 'daily' ? total - 1 : rotation().findIndex(e => e.key === key && (e.s === s || sameCard(e.s, s)));
@@ -1512,14 +1533,48 @@ async function renderPage(key, s = state, idx, total) {
 function showInk(ink) {
   const out = $('out').getContext('2d');
   const img = out.createImageData(W, H);
-  const pal = [[255,255,255],[17,17,17],[200,30,30]];
   for (let i = 0; i < W * H; i++) {
-    const [r, g, b] = pal[ink[i]];
+    const [r, g, b] = INKS[ink[i]].rgb;
     img.data.set([r, g, b, 255], i * 4);
   }
   out.putImageData(img, 0, 0);
 }
 
+// <codec> (extracted and run by tests/test_codec.py)
+// DXF1: 12-byte header, then runs (0cccllll, llll=15 -> 16 + varint) and literals
+// (1nnnnnnn + n+1 pixels packed at bpp bits, MSB first; n=127 -> 128 + varint). See include/frame_codec.h.
+function encodeFrame(ink, w, h, bpp) {
+  const n = w * h, out = [68, 88, 70, 49, w & 255, w >> 8, h & 255, h >> 8, bpp, 0, 0, 0];
+  const minRun = Math.max(3, Math.ceil(16 / bpp) + 1);   // shorter runs are cheaper inside a literal
+  const varint = v => { while (v > 127) { out.push((v & 127) | 128); v >>>= 7; } out.push(v); };
+  let lit = [];
+  const flush = () => {
+    if (!lit.length) return;
+    if (lit.length < 128) out.push(0x80 | (lit.length - 1));
+    else { out.push(0xff); varint(lit.length - 128); }
+    let acc = 0, bits = 0;
+    for (const c of lit) { acc = ((acc << bpp) | c) & 0xfff; bits += bpp; while (bits >= 8) { out.push((acc >> (bits - 8)) & 255); bits -= 8; } }
+    if (bits) out.push((acc << (8 - bits)) & 255);
+    lit = [];
+  };
+  for (let i = 0; i < n;) {
+    const c = ink[i];
+    let j = i + 1;
+    while (j < n && ink[j] === c) j++;
+    const run = j - i;
+    if (run >= minRun) {
+      flush();
+      if (run < 16) out.push((c << 4) | (run - 1));
+      else { out.push((c << 4) | 15); varint(run - 16); }
+    } else for (let k = 0; k < run; k++) lit.push(c);
+    i = j;
+  }
+  flush();
+  return new Uint8Array(out);
+}
+// </codec>
+
+// Two raw 1-bit planes (black, red): the page format of firmware up to 1.4.0.
 function pack(ink) {
   const buf = new Uint8Array(PLANE * 2);
   for (let i = 0; i < W * H; i++) {
@@ -1831,7 +1886,7 @@ function buildCollectionBox() {
 function renderCollection() {
   if (!$('colbox')) return;
   const list = state.collection || [];
-  const max = deviceInfo ? (deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8) : 28;
+  const max = deviceInfo ? (deviceInfo.api >= 2 ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8) : 28;
   $('colInfo').textContent = t('col_info', {n: list.length, p: rotation().length, d: state.pg_daily ? dailyN() : 0, m: max});
   const btn = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = fn; return b; };
   const commit = next => { state.collection = next; renderCollection(); buildTabs(); scheduleRender(); saveState(true); };
@@ -2598,7 +2653,8 @@ async function detectDevice() {
     const r = await fetch(url, {cache: 'no-store'});
     if (!r.ok) throw 0;
     deviceInfo = await r.json();
-    state.panel = deviceInfo.red ? 'bwr' : 'bw';
+    state.panel = deviceInfo.panel || (deviceInfo.red ? 'bwr' : 'bw');
+    if (Array.isArray(deviceInfo.palette)) PANELS[state.panel] = {palette: deviceInfo.palette.filter(n => INKS.some(k => k.name === n))};
     setConnected();
     const sr = await fetch(api('/api/state'), {cache: 'no-store'});
     if (sr.ok) {
@@ -2626,30 +2682,45 @@ async function sendAll() {
   const entries = rotation();
   if (!entries.length) { setStatus(t('st_no_pages')); return; }
   const daily = state.pg_daily ? dailyIds() : [];
-  const total = entries.length + daily.length, max = deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8;
+  if ((deviceInfo.w ?? W) !== W || (deviceInfo.h ?? H) !== H) { setStatus(t('st_size', {w: W, h: H, pw: deviceInfo.w, ph: deviceInfo.h})); return; }
+  const dxf = deviceInfo.api >= 2;     // older firmware: raw two-plane pages, fixed size
+  const total = entries.length + daily.length, max = dxf ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8;
   if (total > max) { setStatus(t('st_too_many', {n: total, m: max})); return; }
   const dots = entries.length + (daily.length ? 1 : 0);
   let note = '';
   try {
+    const jobs = [...entries.map((e, i) => [e.key, e.s, i]),
+      ...daily.map((id, k) => ['daily', {...state, _dailyId: id}, dots - 1])];
+    // Render everything first: compressed pages differ in size, so check they all fit.
+    const bpp = paletteBpp(panelOf(state).palette), frames = [];
+    for (let i = 0; i < jobs.length; i++) {
+      const [key, s, idx] = jobs[i];
+      setStatus(t('st_rendering', {i: i + 1, n: jobs.length}));
+      const ink = await renderPage(key, s, idx, dots);
+      frames.push({data: dxf ? encodeFrame(ink, W, H, bpp) : pack(ink), overlay: ink.overlay});
+    }
+    const bytes = frames.reduce((a, f) => a + f.data.length, 0);
+    if (dxf) {
+      const blk = n => Math.ceil(n / 4096) * 4096;     // on flash: whole blocks, +1 for the counter box, +1 upload in progress
+      const need = frames.reduce((a, f) => a + blk(f.data.length) + 4096, 0) + blk(Math.max(...frames.map(f => f.data.length)));
+      if (need > deviceInfo.pageBudget) { setStatus(t('st_too_big', {n: Math.ceil(need / 1024), m: Math.floor(deviceInfo.pageBudget / 1024)})); return; }
+    }
     setStatus(t('st_glyphs'));
     const gd = new FormData();
     gd.append('glyphs', new Blob([buildGlyphs()], {type: 'application/octet-stream'}), 'glyphs.bin');
     const gr = await fetch(api('/api/glyphs'), {method: 'POST', body: gd});
     if (gr.status === 404) note = ' · ' + t('st_old_fw');
     else if (!gr.ok) throw new Error(`glyphs: HTTP ${gr.status}`);
-    const jobs = [...entries.map((e, i) => [e.key, e.s, i]),
-      ...daily.map((id, k) => ['daily', {...state, _dailyId: id}, dots - 1])];
-    for (let i = 0; i < jobs.length; i++) {
-      const [key, s, idx] = jobs[i];
-      setStatus(t('st_sending', {i: i + 1, n: jobs.length}));
-      const ink = await renderPage(key, s, idx, dots);
+    for (let i = 0; i < frames.length; i++) {
+      setStatus(t('st_sending', {i: i + 1, n: frames.length}));
       const fd = new FormData();
-      fd.append('frame', new Blob([pack(ink)], {type: 'application/octet-stream'}), 'frame.bin');
-      const o = ink.overlay;
+      fd.append('frame', new Blob([frames[i].data], {type: 'application/octet-stream'}), 'frame.bin');
+      const o = frames[i].overlay;
       const ov = o ? '&ov=' + [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep].join(',') : '';
       const r = await fetch(api(`/api/frame?slot=${i}${ov}`), {method: 'POST', body: fd});
       if (!r.ok) throw new Error(`${t('st_page', {i: i + 1})}: HTTP ${r.status}`);
     }
+    note = ' · ' + t('st_sent_kb', {kb: Math.ceil(bytes / 1024)}) + note;
     const body = new URLSearchParams({count: entries.length, interval: Math.max(0, Number(state.interval) || 0),
       daily: daily.length, sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
       tz: state.tz || DEFAULTS.tz, now: Math.floor(Date.now() / 1000)});
@@ -2694,11 +2765,17 @@ function api(path) {
   return url;
 }
 
+// Panel name for menus and the status line; unknown panels show their ink list.
+function panelLabel(id) {
+  const key = 'pn_' + id, name = t(key);
+  return name !== key ? name : (PANELS[id]?.palette || [id]).join('/');
+}
+
 function setConnected() {
   const i = deviceInfo;
   const bat = i.batteryMv > 1000 ? ' · ' + t('st_bat', {v: (i.batteryMv / 1000).toFixed(2)}) : '';
   renderSystemBox();
-  setStatus(t('st_connected', {w: i.w, h: i.h, mode: t(i.red ? 'mode_bwr' : 'mode_bw'), c: i.current + 1, n: i.entries ?? i.count}) + bat);
+  setStatus(t('st_connected', {w: i.w, h: i.h, mode: panelLabel(state.panel), c: i.current + 1, n: i.entries ?? i.count}) + bat);
 }
 
 // Normalise data that may come from older saves (Italian type names, missing languages).

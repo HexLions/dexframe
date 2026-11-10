@@ -12,7 +12,7 @@ An e-paper showcase for your Pokémon. Pick a Pokémon, fill in its card, and De
 
 - The **browser** renders the full 400×300 frame on a `<canvas>`: layout, 1-bit text, and the sprite (loaded from [PokeAPI/sprites](https://github.com/PokeAPI/sprites)).
 - Sprites are scaled by **integer factors** with nearest-neighbour; shading is an ordered dither **inside each sprite pixel's block**, so the pixel grid stays sharp.
-- Each card is split into **pages** (Portrait, Moves, Stats, Weaknesses, History, Ribbons, Trainer, Hall of Fame, Pokémon of the day) with 16px text for readability. Pages are packed into two 1-bit planes (black, red) and uploaded to the ESP32, which stores them on LittleFS (up to 28) and rotates them on a timer. No server, no cloud.
+- Each card is split into **pages** (Portrait, Moves, Stats, Weaknesses, History, Ribbons, Trainer, Hall of Fame, Pokémon of the day) with 16px text for readability. Pages are stored as palette-indexed pixels with run-length compression (a few KB each, see *Frame format*) and uploaded to the ESP32, which keeps them on LittleFS and rotates them on a timer. No server, no cloud.
 - The **BOOT button** (GPIO0) or an external button on **GPIO33** jumps to the next page; GPIO33 also wakes the board from deep sleep.
 - The **"Days together"** counter on the portrait is redrawn by the ESP32 itself every midnight (NTP time), using a digit strip rendered by the browser — on B/W panels with a partial refresh, no full-screen flash.
 - The [Silkscreen](https://fonts.google.com/specimen/Silkscreen) pixel font (OFL-1.1) is bundled in `data/www/fonts/`, so the UI works without Google Fonts.
@@ -22,7 +22,7 @@ An e-paper showcase for your Pokémon. Pick a Pokémon, fill in its card, and De
 | Part | Notes |
 |---|---|
 | ESP32 board | WEMOS LOLIN32 Lite (tested layout) or any `esp32dev`-compatible DevKit (WROOM-32) |
-| 4.2" SPI e-paper, 400×300, SSD1683 | B/W (`GDEY042T81`) or B/W/Red (`GDEY042Z98`), e.g. WeAct Studio module |
+| 4.2" SPI e-paper, 400×300 | B/W (`GDEY042T81`) or B/W/Red (`GDEY042Z98`), e.g. WeAct Studio module; see *Panels* for the others |
 | Push button (optional) | 6×6 tactile, GPIO33 ↔ GND: next page + wake from deep sleep |
 | LiPo + charger (optional) | e.g. 1S LiPo + TP4056 with protection into the DevKit 5V/VIN pin; battery sense on GPIO35 via a 100k/100k divider |
 
@@ -53,7 +53,7 @@ Below 3.5 V a small battery mark appears in the bottom-left corner of the page.
 
 ### Ready-made binaries (no toolchain)
 
-1. Download `dexframe-bw-factory.bin` (or `dexframe-bwr-factory.bin` for the red panel) from the
+1. Download `dexframe-<panel>-factory.bin` for your panel (`bw`, `bwr`, … see *Panels*) from the
    [Releases](https://github.com/HexLions/dexframe/releases) page.
 2. Flash it **at address 0x0** with the [ESP web flasher](https://espressif.github.io/esptool-js/) (Chrome/Edge, USB cable),
    or `esptool.py --chip esp32 write_flash 0x0 dexframe-bw-factory.bin`.
@@ -66,7 +66,7 @@ Below 3.5 V a small battery mark appears in the bottom-left corner of the page.
 
 ```bash
 git clone https://github.com/HexLions/dexframe.git && cd dexframe
-pio run -e bw -t upload        # B/W panel   (use -e bwr for the B/W/Red panel)
+pio run -e bw -t upload        # B/W panel   (other panels: -e bwr, -e bwry, see Panels)
 pio run -e bw -t uploadfs      # web UI to LittleFS (first install only)
 pio device monitor             # prints the setup / device URL
 ```
@@ -83,7 +83,8 @@ retrying the network in the background; it closes the access point as soon as th
 *System* section of the web UI (or `http://dexframe.local/setup`, which is built into the firmware and
 works even with an empty file system):
 
-- **Update firmware**: `dexframe-bw-ota.bin` / `dexframe-bwr-ota.bin` from the release, or `.pio/build/<env>/firmware.bin`.
+- **Update firmware**: `dexframe-<panel>-ota.bin` from the release, or `.pio/build/<env>/firmware.bin`.
+  Pages sent with firmware 1.4.0 keep showing after the update; send them again to store them compressed.
 - **Update web UI**: pick the project's `data/www` folder; files are uploaded one by one (`index.html` last),
   pages and saved data stay. Also the way to add your ribbon/trainer images without `uploadfs`.
 - **Key** (optional): when set, every change to the board (pages, settings, updates, Wi-Fi) needs it.
@@ -131,9 +132,10 @@ Save the Pokémon in the editor as a card (*Collection → Save*), load it back 
 With *Put a portrait of every Pokémon in the collection in the rotation* each card adds its own portrait page
 (with its own day counter). Cards are part of the saved state and of the backup file.
 
-Pages live in LittleFS next to the web UI and your images: the firmware reports how many fit (`slotsFit`)
-and the UI refuses to send more. With a ~700 KB ribbon pack on the board about 15 pages fit; without it, 28.
-If you need more, keep the images on the PC (see *Driving the display from a PC*).
+Pages live in LittleFS next to the web UI and your images. They are compressed, so their size depends on
+the content (around 5 KB for a B/W page, more with large dithered sprites or a second colour). The firmware
+reports the room it has (`pageBudget`), the UI renders everything first and refuses to send what doesn't fit.
+The hard limit is 48 pages.
 
 ## PKHeX import (.pk4 – .pk9)
 
@@ -216,7 +218,7 @@ restores it. Images from your own folders are not included, only which ones you 
 ## Driving the display from a PC (large image sets)
 
 Big image sets don't fit the ESP32 (a 1500-sprite trainer pack is ~2.8 MB; LittleFS has ~1.4 MB).
-The board doesn't need them: it only stores the rendered pages (30 KB each).
+The board doesn't need them: it only stores the rendered pages (a few KB each).
 
 1. Build a single file with everything embedded:
    `python3 tools/make_standalone.py . --trainers ~/my-trainer-pack`
@@ -244,8 +246,8 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 
 | Method | Path | Body |
 |---|---|---|
-| GET | `/api/info` | → `{w,h,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy}` |
-| POST | `/api/frame?slot=N[&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–27), exactly 30000 bytes (2 × 15000-byte planes, MSB-first); `ov` = day-counter box |
+| GET | `/api/info` | → `{w,h,api,panel,panelName,palette,bpp,partial,pageBudget,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy}` |
+| POST | `/api/frame?slot=N[&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = day-counter box, `color` 0 black, 1 red, 2 yellow… |
 | POST | `/api/glyphs` | multipart file: digit strip for the day counter (`[gw,gh,n,adv[n],bitmaps]`) |
 | POST | `/api/rotation` | form: `count` (regular pages), `interval` (minutes, `0` = button only), `daily` (pool size, slots after the regular ones), `sleep` (0/1), `awake` (min), `tz` (POSIX), `now` (epoch s) |
 | POST | `/api/next` | show next page |
@@ -264,6 +266,44 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 
 When a key is set, every `POST` needs `?key=…`; `GET` requests stay open.
 
+## Panels
+
+One firmware build per panel; the web UI asks the board what it has (`/api/info`: size, inks, partial refresh)
+and renders for it.
+
+| Build | Panel | Inks | Notes |
+|---|---|---|---|
+| `bw` | 4.2" 400×300 `GDEY042T81` | black, white | fast partial refresh: the day counter updates without a flash |
+| `bwr` | 4.2" 400×300 `GDEY042Z98` | black, white, red | full refresh only (~16 s) |
+| `bwry` | 4.2" 400×300 `GDEY0420F51` | black, white, red, yellow | **experimental**: builds, not tested on hardware; yellow is not used by the pages yet |
+
+Adding a panel that [GxEPD2](https://github.com/ZinggJM/GxEPD2) supports is a block in `include/panel.h`
+(driver class, inks, partial refresh), an env in `platformio.ini` and an entry in the CI matrix
+(`.github/workflows/build.yml`). The page layouts are still drawn for 400×300: other sizes need the layout
+work listed in the roadmap.
+
+## Frame format
+
+A page is a `DXF1` file (`include/frame_codec.h` has the decoder, `encodeFrame()` in `index.html` the encoder):
+
+- 12-byte header: `"DXF1"`, width and height (u16 little-endian), bits per pixel of literals (1–4), 3 zero bytes;
+- then tokens until width × height pixels are covered, row by row:
+  - `0cccllll` — run of ink `c`; `llll` + 1 pixels, or 16 + a LEB128 varint when `llll` is 15;
+  - `1nnnnnnn` — `n` + 1 literal pixels (128 + varint when `n` is 127), packed at bpp bits each, MSB first.
+
+Ink codes: 0 white, 1 black, 2 red, 3 yellow, 4 blue, 5 green, 6 orange. An ink the panel lacks is drawn black.
+The board checks the whole stream on upload and draws it run by run, without holding the frame in RAM.
+Raw two-plane pages from firmware 1.4.0 (30000 bytes) are still accepted on 400×300 panels.
+
+## Tests
+
+```bash
+python3 tests/test_codec.py    # web UI encoder against the firmware decoder (needs node, g++)
+python3 tests/test_ui.py       # web UI against a fake board, every panel type (needs playwright + chromium)
+```
+
+Both run in CI on every push, next to the firmware builds.
+
 ## Roadmap
 
 - [x] Single Pokémon card, rotating pages (incl. Trainer card, Hall of Fame, weaknesses)
@@ -271,7 +311,10 @@ When a key is set, every `POST` needs `?key=…`; `GET` requests stay open.
 - [x] Day counter updated by the board, Pokémon of the day
 - [x] Showdown import, deep sleep + battery, 3D-printable case
 - [x] PKHeX file import, setup portal, updates over Wi-Fi, ready-made binaries
-- [ ] Team view (6 slots, small menu icons)
+- [x] Team view
+- [x] Panel description from the firmware, compressed palette frames, one build per panel
+- [ ] Colour: yellow and 6-colour panels (sprites and type colours quantised to the panel's inks)
+- [ ] Layouts that adapt to other panel sizes (2.9", 7.3")
 
 ## License
 

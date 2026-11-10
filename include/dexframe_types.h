@@ -5,6 +5,9 @@
 // Day-counter overlay of a slot: "x,y,w,h,align,startDay,color,sep"
 struct Overlay { int x, y, w, h, align; int32_t start; int color, sep; bool ok; };
 
+// Day count laid out for drawing: glyph indexes and the x of the first one.
+struct OverlayRun { int idx[24]; int k = 0; int x = 0; };
+
 
 // /glyphs.bin from the browser: [gw, gh, n] then n advances, then n bitmaps of
 // gh rows x ceil(gw/8) bytes (MSB first). Glyphs 0-9 are digits, 10 is the
