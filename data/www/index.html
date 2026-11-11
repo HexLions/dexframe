@@ -18,7 +18,7 @@ main{max-width:1240px;margin:0 auto;padding:16px}
   .layout{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .layout .preview{position:sticky;top:12px;margin-bottom:0}
 }
-.sections{display:flex;gap:6px;overflow-x:auto;padding:8px 2px;margin-bottom:4px;scrollbar-width:thin;
+.sections{display:flex;gap:6px;flex-wrap:wrap;padding:8px 2px;margin-bottom:4px;
   position:sticky;top:0;z-index:2;background:var(--bg)}
 .sections button{flex:none;white-space:nowrap}
 .sections button[aria-current=page]{background:var(--acc);color:#fff;border-color:var(--acc)}
@@ -2812,12 +2812,8 @@ function showSection(gid, fromClick) {
   section = gid;
   document.querySelectorAll('#form fieldset').forEach(fs => fs.classList.toggle('active', fs.dataset.group === gid));
   document.querySelectorAll('#sections button').forEach(b => {
-    if (b.dataset.section === gid) {
-      b.setAttribute('aria-current', 'page');
-      // horizontal only: bring the active section into the bar without moving the page
-      const nav = $('sections');
-      nav.scrollLeft = Math.max(0, b.offsetLeft - nav.offsetLeft - (nav.clientWidth - b.offsetWidth) / 2);
-    } else b.removeAttribute('aria-current');
+    if (b.dataset.section === gid) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
   });
   if (location.hash !== '#' + gid) history.replaceState(null, '', '#' + gid);
   const page = SECTION_PAGE[gid];
