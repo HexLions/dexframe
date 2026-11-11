@@ -1,7 +1,7 @@
 // ---------- i18n ----------
 // Two independent languages: `uiLang` for this page, `dispLang` for what the
 // e-paper shows. Add a language by adding a block to LANGS, UI, DISP and TYPE_NAMES.
-const LANGS = {it: 'Italiano', en: 'English'};
+const LANGS = {it: 'Italiano', en: 'English', es: 'Español', fr: 'Français', de: 'Deutsch'};
 
 const UI = {
   it: {
@@ -89,7 +89,7 @@ const UI = {
     g_system: 'Sistema', sy_info: 'Firmware {v} · memoria {u} / {t} KB · Wi-Fi: {w}{k}', sy_key_on: ' · chiave attiva',
     sy_nodev: 'Collega un display per aggiornarlo.', sy_key: 'Chiave del display (se impostata)',
     sy_fw: 'Aggiorna firmware (.bin)…', sy_ui: 'Aggiorna interfaccia (cartella data/www)…', sy_setup: 'Wi-Fi e sicurezza →', sy_reboot: 'Riavvia',
-    sy_fw_info: 'Usa dexframe-bw-ota.bin o dexframe-bwr-ota.bin (o .pio/build/<env>/firmware.bin). Pagine, dati e Wi-Fi restano.',
+    sy_fw_info: 'Usa dexframe-<pannello>-ota.bin (o .pio/build/<env>/firmware.bin). Pagine, dati e Wi-Fi restano.',
     sy_ui_info: 'Scegli la cartella data/www del progetto: copia i file uno per uno, senza cancellare pagine e dati (al contrario di uploadfs).',
     sy_sending: 'Invio {f} ({i}/{n})…', sy_fw_ok: 'Firmware aggiornato, il display si riavvia', sy_ui_ok: 'Interfaccia aggiornata: {n} file, ricarica la pagina',
     sy_err: 'Errore: {e}', sy_key_bad: 'chiave mancante o sbagliata (Sistema → Chiave)',
@@ -188,7 +188,7 @@ const UI = {
     g_system: 'System', sy_info: 'Firmware {v} · storage {u} / {t} KB · Wi-Fi: {w}{k}', sy_key_on: ' · key on',
     sy_nodev: 'Connect a display to update it.', sy_key: 'Display key (if set)',
     sy_fw: 'Update firmware (.bin)…', sy_ui: 'Update web UI (data/www folder)…', sy_setup: 'Wi-Fi and security →', sy_reboot: 'Restart',
-    sy_fw_info: 'Use dexframe-bw-ota.bin or dexframe-bwr-ota.bin (or .pio/build/<env>/firmware.bin). Pages, data and Wi-Fi are kept.',
+    sy_fw_info: 'Use dexframe-<panel>-ota.bin (or .pio/build/<env>/firmware.bin). Pages, data and Wi-Fi are kept.',
     sy_ui_info: 'Pick the project data/www folder: files are copied one by one, pages and data are kept (unlike uploadfs).',
     sy_sending: 'Sending {f} ({i}/{n})…', sy_fw_ok: 'Firmware updated, the display restarts', sy_ui_ok: 'Web UI updated: {n} files, reload the page',
     sy_err: 'Error: {e}', sy_key_bad: 'missing or wrong key (System → Key)',
@@ -303,6 +303,11 @@ const DEFAULTS = {
   pg_daily:false, dailyCount:7, dailySeed:0,
   collection:[], colRotation:true,
   sleep:false, awake:3, tz:'CET-1CEST,M3.5.0,M10.5.0/3',
+  ivs:'31/31/31/31/31/31', evs:'4/0/0/252/0/252',
+  pg_countdown:false, pg_movedex:false, pg_radar:false, pg_evo:false, pg_dexinfo:false,
+  cdTitle:'', cdDate:'', teamPer:6, pageOrder:[], pageMin:{},
+  quietOn:false, quietFrom:'23:00', quietTo:'07:00', flip:false, btnDouble:0, btnLong:0, batLow:3.5, fullEvery:10,
+  pageStyle:'classic', previewPanel:'',
 };
 
 const typeOpts = (blank) => () => [...(blank ? [['', '—']] : []), ...TYPE_KEYS.map(k => [k, typeName(k, state.uiLang)])];
@@ -314,7 +319,8 @@ const GROUPS = [
     ['nature','nature'],['ability','ability'],['item','item'],['language','language']]],
   ['moves', [0,1,2,3].flatMap(i => [['move' + i, ['move', {n: i + 1}]], ['mtype' + i, 'mtype', 'select', typeOpts(false)]])],
   ['stats', [['ps','ps','number'],['att','att','number'],['dif','dif','number'],
-    ['atsp','atsp','number'],['dfsp','dfsp','number'],['vel','vel','number']]],
+    ['atsp','atsp','number'],['dfsp','dfsp','number'],['vel','vel','number'],
+    ['ivs','ivs','text','wide'],['evs','evs','text','wide']]],
   ['story', [['ot','ot'],['tid','tid'],['met','met'],['region','region'],
     ['metPlace','metPlace'],['deposited','deposited'],['characteristic','characteristic','text','wide'],
     ['since','since','text','wide']]],
@@ -329,11 +335,19 @@ const GROUPS = [
     ['shiny','shiny','checkbox'],
     ['panel','panel','select',() => Object.keys(PANELS).map(k => [k, panelLabel(k)])],
     ['dither','dither','select',() => [['blocks', t('dt_blocks')],['threshold', t('dt_threshold')]]],
-    ['contrast','contrast','number'],['interval','interval','number'],['deviceUrl','deviceUrl','text','wide'],
-    ['sleep','sleep','checkbox','wide'],['awake','awake','number'],['tz','tz','text','adv']]],
-  ['pages', [['pg_cover','pg_cover','checkbox'],['pg_moves','pg_moves','checkbox'],['pg_stats','pg_stats','checkbox'],
-    ['pg_weak','pg_weak','checkbox'],['pg_story','pg_story','checkbox'],['pg_ribbons','pg_ribbons','checkbox'],
-    ['pg_trainer','pg_trainer','checkbox'],['pg_team','pg_team','checkbox'],['pg_hof','pg_hof','checkbox'],['pg_daily','pg_daily','checkbox'],
+    ['contrast','contrast','number'],
+    ['pageStyle','pageStyle','select',() => ['classic', 'accent', 'light'].map(k => [k, t('ps_' + k)])],
+    ['previewPanel','previewPanel','select',() => [['', t('pv_same')], ...Object.keys(PANELS).map(k => [k, panelLabel(k)])]],
+    ['interval','interval','number'],['deviceUrl','deviceUrl','text','wide'],
+    ['quietOn','quietOn','checkbox','wide'],['quietFrom','quietFrom','time'],['quietTo','quietTo','time'],
+    ['flip','flip','checkbox','wide'],
+    ['btnDouble','btnDouble','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
+    ['btnLong','btnLong','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
+    ['sleep','sleep','checkbox','wide'],['awake','awake','number'],
+    ['batLow','batLow','number'],['fullEvery','fullEvery','number'],['tz','tz','text','adv']]],
+  // which pages, their order and minutes: the list built by buildPagesBox()
+  ['pages', [['teamPer','teamPer','select',() => [6, 3, 2].map(k => [k, t('tp_' + k)])],
+    ['cdTitle','cdTitle'],['cdDate','cdDate'],
     ['dailyCount','dailyCount','number','wide']]],
   ['system', []],
   ['backup', []],

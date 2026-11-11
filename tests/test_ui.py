@@ -69,28 +69,34 @@ def file_part(req):
 
 def paint_overlay(px, ov, g, today):
     """Mirror of layoutOverlay() + paintOverlay() in src/main.cpp."""
-    x0, y0, w, h, align, start, color, sep = map(int, ov.split(','))
+    v = list(map(int, ov.split(',')))
+    x0, y0, w, h, align, start, color, sep = v[:8]
+    mode, sc = (v[8] if len(v) > 8 else 0), (min(4, max(1, v[9])) if len(v) > 9 else 1)
     gw, gh, n = g[0], g[1], g[2]
     adv, bits, stride = g[3:3 + n], g[3 + n:], (g[0] + 7) // 8
-    digits, idx = str(max(0, today - start)), []
+    digits, idx = str(max(0, start - today if mode == 1 else today - start)), []
     for i, c in enumerate(digits):
         if sep and n > 10 and i > 0 and (len(digits) - i) % 3 == 0:
             idx.append(10)
         idx.append(int(c))
-    total = sum(adv[i] for i in idx)
+    total = sum(adv[i] * sc for i in idx)
     x = x0 + w - total if align == 2 else x0 + (w - total) // 2 if align == 1 else x0
     out = bytearray(px)
     for yy in range(y0, y0 + h):
         out[yy * W + x0:yy * W + x0 + w] = bytes(w)
     for k in idx:
         glyph = bits[k * gh * stride:(k + 1) * gh * stride]
-        for gy in range(min(gh, h)):
+        for gy in range(gh):
             for gx in range(gw):
                 if glyph[gy * stride + (gx >> 3)] & (0x80 >> (gx & 7)):
-                    p = x - 2 + gx
-                    if x0 <= p < x0 + w:
-                        out[(y0 + gy) * W + p] = color + 1
-        x += adv[k]
+                    for dx in range(sc):
+                        p = x + (gx - 2) * sc + dx
+                        if not x0 <= p < x0 + w:
+                            continue
+                        for dy in range(sc):
+                            if gy * sc + dy < h:
+                                out[(y0 + gy * sc + dy) * W + p] = color + 1
+        x += adv[k] * sc
     return bytes(out)
 
 
@@ -99,7 +105,9 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
     info = {'w': W, 'h': H, 'red': 'red' in palette, 'maxSlots': 48, 'slotsFit': 28, 'count': 1, 'daily': 0,
             'entries': 1, 'current': 0, 'interval': 10, 'batteryMv': 3912, 'busy': False}
     if api:
-        info.update(api=api, panel=pid, palette=palette, bpp=2 if len(palette) > 2 else 1, pageBudget=1_000_000)
+        info.update(api=api, panel=pid, palette=palette, bpp=2 if len(palette) > 2 else 1, pageBudget=1_000_000,
+                    features='pages,quiet,intervals,flip,button,thresholds,countdown')
+    uploads = []
 
     async def device(route):
         req, u = route.request, urlparse(route.request.url)
@@ -111,7 +119,11 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
         if u.path == '/api/glyphs':
             dev['glyphs'] = file_part(req)
             return await route.fulfill(status=204, headers=cors)
+        if u.path == '/api/pages' and api:
+            pages = [{'slot': k, 'size': len(f), 'crc': zlib.crc32(f), 'ov': ov or ''} for k, (f, ov) in dev['frames'].items()]
+            return await route.fulfill(status=200, headers=cors, content_type='application/json', body=json.dumps(pages))
         if u.path == '/api/frame':
+            uploads.append(int(q['slot'][0]))
             dev['frames'][int(q['slot'][0])] = (file_part(req), q.get('ov', [None])[0])
             return await route.fulfill(status=204, headers=cors)
         if u.path == '/api/rotation':
@@ -140,15 +152,44 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
     await page.fill('input[name=deviceUrl]', 'http://fake.esp')
     await page.dispatch_event('input[name=deviceUrl]', 'change')
     await page.wait_for_function("typeof deviceInfo !== 'undefined' && deviceInfo", timeout=15000)
+    # pages added in 1.6 that need no network: countdown (big digits redrawn by the board),
+    # IV/EV chart, team split in two pages; plus the settings that travel with the rotation
+    await page.evaluate("""Object.assign(state, {pg_countdown: true, cdDate: '25/12/2031', cdTitle: 'Test', pg_radar: true, teamPer: 3,
+        quietOn: true, quietFrom: '23:00', quietTo: '07:00', flip: true, btnDouble: 2, btnLong: 3, pageMin: {cover: 30}});
+        buildTabs()""")
+    sent = "document.querySelector('#status').textContent.match(/Sent|failed|Too|take|draws/)"
     await page.click('#send')
-    await page.wait_for_function("document.querySelector('#status').textContent.match(/Sent|failed|Too|take|draws/)", timeout=120000)
+    await page.wait_for_function(sent, timeout=120000)
     status = await page.inner_text('#status')
+    first = len(uploads)
+    resent = None
+    if api:      # same pages again: the board has them, nothing is uploaded
+        await page.evaluate("setStatus('…')")
+        await page.click('#send')
+        await page.wait_for_function(sent, timeout=120000)
+        resent = len(uploads) - first
+    i18n = await page.evaluate("""() => {
+        const bad = [], vars = s => (String(s).match(/\\{\\w+\\}/g) || []).sort().join();
+        for (const [name, T] of [['UI', UI], ['DISP', DISP], ['TYPE_NAMES', TYPE_NAMES]])
+          for (const l of Object.keys(LANGS)) for (const k of Object.keys(T.en)) {
+            if (!(k in (T[l] || {}))) bad.push(`${name}.${l}.${k} missing`);
+            else if (vars(T[l][k]) !== vars(T.en[k])) bad.push(`${name}.${l}.${k} placeholders`);
+          }
+        return bad; }""")
     await ctx.close()
 
     label = f"{pid}{'' if api else ' (firmware 1.4.0)'}"
     problems = list(errors)
+    problems += i18n[:8]
     if 'Sent' not in status:
         problems.append('status: ' + status)
+    if resent:
+        problems.append(f'second send uploaded {resent} pages again')
+    rot = parse_qs(dev['rotation'] or '')
+    if api and [rot.get(k, [''])[0] for k in ('qf', 'qt', 'flip', 'dbl', 'lng')] != ['1380', '420', '1', '2', '3']:
+        problems.append('settings not sent with the rotation: ' + str(dev['rotation']))
+    if api and not rot.get('iv', [''])[0].startswith('30,'):
+        problems.append('per-page minutes not sent: ' + str(rot.get('iv')))
     if not dev['frames'] or dev['rotation'] is None or not dev['glyphs']:
         problems.append('nothing received')
     allowed = {INKS.index(n) for n in palette}

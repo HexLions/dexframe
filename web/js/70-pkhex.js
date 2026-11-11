@@ -159,7 +159,7 @@ async function extendRibbonNames() {
 
 function pkxLocation(T, gen, loc, version) {
   // Gen 3-5 Pokémon moved forward with Poké Transfer (the label is blank in the Gen 5 text table)
-  if (loc === 30001 && version <= 23) return {it: 'Pokétrasporto', en: 'Poké Transfer'}[state.dispLang] || 'Poké Transfer';
+  if (loc === 30001 && version <= 23) return {it: 'Pokétrasporto', en: 'Poké Transfer', es: 'Pokétransfer', fr: 'Poké Fret', de: 'Poképorter'}[state.dispLang] || 'Poké Transfer';
   const sets = T.locations['g' + Math.max(4, gen)] || {};
   const base = Object.keys(sets).map(Number).filter(b => b <= loc).sort((a, b) => b - a)[0];
   const name = base != null ? sets[base]?.[loc - base] : '';
@@ -206,6 +206,7 @@ async function importPkx(file, opts) {
     nature: T.natures[r.nature] || '', ability: T.abilities[r.ability] || '',
     item: r.item ? (T.items[r.item] || '') : '', language: PKX_LANG[r.lang] || '',
     ...Object.fromEntries(STAT.map((k, i) => [k, stats[i]])),
+    ivs: [0, 1, 2, 4, 5, 3].map(i => r.ivs[i]).join('/'), evs: [0, 1, 2, 4, 5, 3].map(i => r.evs[i]).join('/'),   // HP Atk Def SpA SpD Spe
   };
   r.moves.forEach((id, i) => { upd['move' + i] = id ? (T.moves[id] || '') : ''; upd['mtype' + i] = mv[i] ? typeKey(mv[i].type.name) : ''; });
   if (opts.story) {

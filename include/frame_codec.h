@@ -83,4 +83,14 @@ bool decode(Read&& read, uint32_t pixels, uint8_t bpp, Sink&& sink) {
   return get() < 0;
 }
 
+// Standard CRC-32 (zlib/PNG polynomial), fed in pieces: start with 0.
+inline uint32_t crc32(uint32_t crc, const uint8_t* data, size_t n) {
+  crc = ~crc;
+  for (size_t i = 0; i < n; i++) {
+    crc ^= data[i];
+    for (int k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1)));
+  }
+  return ~crc;
+}
+
 }  // namespace dxf

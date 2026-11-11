@@ -36,12 +36,17 @@ function pickFlavor(sp, style, lang) {
 const CARD_GROUPS = ['pokemon', 'moves', 'stats', 'story', 'ribbons'];
 const CARD_KEYS = [...GROUPS.filter(([g]) => CARD_GROUPS.includes(g)).flatMap(([, f]) => f.map(x => x[0])), 'shiny'];
 const cardData = (s = state) => Object.fromEntries(CARD_KEYS.map(k => [k, s[k]]));
-const sameCard = (a, b) => CARD_KEYS.every(k => String(a[k] ?? '') === String(b[k] ?? ''));
+// a field one side never had (cards saved before it existed) does not make them differ
+const sameCard = (a, b) => CARD_KEYS.every(k => a[k] == null || b[k] == null || String(a[k]) === String(b[k]));
+// A page can span several screens (team split in parts): one rotation entry per part.
+const pageParts = (key, s = state) => Math.max(1, PAGES[key]?.parts ? PAGES[key].parts(s) : 1);
 function rotation() {
-  const entries = activePages().filter(k => k !== 'daily').map(key => ({key, s: state}));
+  const entries = activePages().filter(k => k !== 'daily')
+    .flatMap(key => Array.from({length: pageParts(key)}, (_, part) => ({key, s: state, part})));
   if (state.colRotation) for (const card of state.collection || [])
     if (!sameCard(card.data, state)) entries.push({key: 'cover', s: {...state, ...card.data}, card});
   return entries;
 }
 const totalEntries = () => rotation().length + (state.pg_daily ? 1 : 0);
+const rotationIndex = (key, part = 0) => key === 'daily' ? totalEntries() - 1 : rotation().findIndex(e => e.key === key && e.s === state && (e.part || 0) === part);
 

@@ -106,6 +106,43 @@ works even with an empty file system):
 - **Weaknesses**: type matchups (Gen 6+ chart) for the card's types: 4×, 2×, ½×, ¼×, 0×. Abilities such as
   Levitate are not taken into account.
 
+## More pages
+
+Off by default; turn them on in *Pages*.
+
+- **Countdown**: days left to a date, with a title of your choice. The board redraws the number every midnight
+  (same mechanism as the day counter) and stops at 0.
+- **Move details**: power, accuracy, PP and category of the four moves (PokeAPI). Move names can be typed in
+  any of the UI languages.
+- **IV/EV chart**: radar of the six stats with the EV spread, and a table with IVs and EVs
+  (*Stats → IVs / EVs*, `HP/Atk/Def/SpA/SpD/Spe`; filled in by the Showdown and PKHeX imports).
+- **Evolutions**: the evolution line of the Pokémon with how each stage evolves; other branches are counted (`+2`).
+- **Pokédex entry**: genus, height, weight, egg groups and the Pokédex text in the display language.
+- **Team and Hall of Fame on several pages**: *Pages → Pokémon per page* 3 or 2 splits the six Pokémon over
+  two or three pages with much larger sprites (exact 2× when they fit).
+
+## Pages: order, timing, style
+
+- *Pages* lists every page: tick it, move it with the arrows, and optionally give it its own **minutes on
+  screen** (empty = the general *Page change* time). The Pokémon of the day always closes the rotation.
+- **Quiet hours** (*Display*): no automatic page change between two times; the button still works and the day
+  counter still updates. With deep sleep on, the board sleeps through them.
+- **Page style**: classic black header, header in the accent ink (red on panels that have it), or light.
+- **Screen upside down**: rotates everything by 180°, for a display mounted with the cable on the other side.
+- **Button**: a short press is always "next page"; a double click and a 1-second press can be set to
+  previous page, next page or a full refresh. With a double-click action set, a single click waits 0.45 s.
+- **Low battery threshold** and **full refresh every N counter updates** (B/W panel) are settings too.
+- **Download PNG** saves the page in the preview as a 400×300 image.
+- *Send all pages* renders four pages at a time and skips the ones the board already holds
+  (`/api/pages` returns size and CRC-32 of each), so a small change uploads one page instead of all.
+
+## Colour
+
+On panels with yellow or more inks (build `bwry`), sprites are dithered between the panel's inks and type
+chips and move stripes take a colour by type. *Display → Preview colours* draws the preview for another
+panel (including a 6-colour one that has no firmware build yet) without changing what is sent: the frames
+always follow the connected display.
+
 ## Pickers: Pokémon, ribbons, badges, sprite style
 
 - **Pokémon**: searchable by name (display language) or Dex number, with icons, for the card itself,
@@ -181,13 +218,15 @@ USB and button openings, hanging slot, and a desk stand (15° tilt). **Measure y
 
 ## Languages
 
-The web UI and the e-paper have **independent languages** (Italian and English included):
+The web UI and the e-paper have **independent languages** (Italian, English, Spanish, French and German):
 the switch at the top of the page sets the UI, *Display → Display language* sets what the panel shows
 (labels, page titles, type names, stock ribbon names). Free-text fields you type in (nature, ability, moves,
 characteristic) are shown as written. Data saved by older versions (Italian type names) is migrated automatically.
 
-To add a language, add a block to `LANGS`, `UI`, `DISP` and `TYPE_NAMES` in `data/www/index.html`
-(and optionally `RIBBON_NAMES`).
+To add a language: its name in `LANGS` (`web/js/05-i18n.js`), a block for `UI`, `DISP` and `TYPE_NAMES`
+(`web/js/07-i18n-langs.js`), its code in `LANGS` of `tools/build_pkx_data.py` (game texts for the pickers and
+the PKHeX import), then `python3 tools/build_ui.py`. The UI test fails if a language misses a key.
+The Silkscreen font covers Latin scripts only.
 
 ## Trainer card
 
@@ -247,9 +286,10 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 | Method | Path | Body |
 |---|---|---|
 | GET | `/api/info` | → `{w,h,api,panel,panelName,palette,bpp,partial,pageBudget,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy}` |
-| POST | `/api/frame?slot=N[&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = day-counter box, `color` 0 black, 1 red, 2 yellow… |
+| POST | `/api/frame?slot=N[&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = day-counter box, `color` 0 black, 1 red, 2 yellow…; two optional fields more: `mode` (0 days since, 1 days until) and `scale` (1–4) |
+| GET | `/api/pages` | → `[{slot,size,crc,ov}]` for the stored pages (CRC-32 of the file) |
 | POST | `/api/glyphs` | multipart file: digit strip for the day counter (`[gw,gh,n,adv[n],bitmaps]`) |
-| POST | `/api/rotation` | form: `count` (regular pages), `interval` (minutes, `0` = button only), `daily` (pool size, slots after the regular ones), `sleep` (0/1), `awake` (min), `tz` (POSIX), `now` (epoch s) |
+| POST | `/api/rotation` | form: `count` (regular pages), `interval` (minutes, `0` = button only), `daily` (pool size, slots after the regular ones), `sleep` (0/1), `awake` (min), `qf`/`qt` (quiet hours, minutes of the day, -1 = off), `iv` (minutes per rotation entry, comma separated, 0 = default), `flip` (0/1), `dbl`/`lng` (button actions: 0 none, 1 next, 2 previous, 3 full refresh), `batlow` (mV), `fullevery`, `tz` (POSIX), `now` (epoch s) |
 | POST | `/api/next` | show next page |
 | POST | `/api/show?slot=N` | show page N |
 | GET/POST | `/api/state` | card data JSON (≤64 KB) |
@@ -284,7 +324,7 @@ work listed in the roadmap.
 
 ## Frame format
 
-A page is a `DXF1` file (`include/frame_codec.h` has the decoder, `encodeFrame()` in `index.html` the encoder):
+A page is a `DXF1` file (`include/frame_codec.h` has the decoder, `encodeFrame()` in `web/js/` the encoder):
 
 - 12-byte header: `"DXF1"`, width and height (u16 little-endian), bits per pixel of literals (1–4), 3 zero bytes;
 - then tokens until width × height pixels are covered, row by row:
@@ -294,6 +334,12 @@ A page is a `DXF1` file (`include/frame_codec.h` has the decoder, `encodeFrame()
 Ink codes: 0 white, 1 black, 2 red, 3 yellow, 4 blue, 5 green, 6 orange. An ink the panel lacks is drawn black.
 The board checks the whole stream on upload and draws it run by run, without holding the frame in RAM.
 Raw two-plane pages from firmware 1.4.0 (30000 bytes) are still accepted on 400×300 panels.
+
+## Web UI sources
+
+`data/www/index.html` is generated: edit `web/` (`index.template.html`, `style.css`, `js/NN-name.js`) and run
+`python3 tools/build_ui.py`. The script only joins the files in name order, with no bundler or minifier, so the
+file the board serves stays readable. CI fails if the generated file is not up to date.
 
 ## Tests
 
@@ -313,7 +359,11 @@ Both run in CI on every push, next to the firmware builds.
 - [x] PKHeX file import, setup portal, updates over Wi-Fi, ready-made binaries
 - [x] Team view
 - [x] Panel description from the firmware, compressed palette frames, one build per panel
-- [ ] Colour: yellow and 6-colour panels (sprites and type colours quantised to the panel's inks)
+- [x] Page order and per-page timing, quiet hours, button actions, 180° screen, page styles
+- [x] Countdown, move details, IV/EV chart, evolutions, Pokédex entry, team on several pages
+- [x] Spanish, French, German
+- [x] Colour on the 4-ink panel (sprites and type colours quantised to the panel's inks), colour preview
+- [ ] 6-colour panels (firmware build; the web UI can already preview them)
 - [ ] Layouts that adapt to other panel sizes (2.9", 7.3")
 
 ## License

@@ -12,7 +12,7 @@ function parseDay(str) {
 }
 const todayDay = () => { const n = new Date(); return Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000); };
 const sinceDay = s => parseDay(s.since) ?? parseDay(s.met);
-const NUM_SEP = {it: '.', en: ','};
+const NUM_SEP = {it: '.', en: ',', es: '.', fr: ' ', de: '.'};
 const numSep = () => NUM_SEP[state.dispLang] || ',';
 const fmtNum = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, numSep());
 

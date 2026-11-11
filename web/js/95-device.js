@@ -32,6 +32,18 @@ async function saveState(quiet) {
   if (!quiet) setStatus(r.ok ? t('st_saved') : t('st_save_err', {e: r.status}));
 }
 
+// CRC-32 (zlib), to recognise pages the board already has (GET /api/pages).
+function crc32(bytes) {
+  let c = ~0;
+  for (let i = 0; i < bytes.length; i++) {
+    c ^= bytes[i];
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1));
+  }
+  return ~c >>> 0;
+}
+const minutesOf = hhmm => { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : -1; };
+const overlayArg = o => o ? [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep, o.mode || 0, o.scale || 1].join(',') : '';
+
 // Frames go to slots 0..n-1 (rotation), then the daily pool; then the rotation settings.
 async function sendAll() {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
@@ -40,26 +52,37 @@ async function sendAll() {
   const daily = state.pg_daily ? dailyIds() : [];
   if ((deviceInfo.w ?? W) !== W || (deviceInfo.h ?? H) !== H) { setStatus(t('st_size', {w: W, h: H, pw: deviceInfo.w, ph: deviceInfo.h})); return; }
   const dxf = deviceInfo.api >= 2;     // older firmware: raw two-plane pages, fixed size
+  const feat = String(deviceInfo.features || '').split(',');
   const total = entries.length + daily.length, max = dxf ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8;
   if (total > max) { setStatus(t('st_too_many', {n: total, m: max})); return; }
   const dots = entries.length + (daily.length ? 1 : 0);
   let note = '';
   try {
-    const jobs = [...entries.map((e, i) => [e.key, e.s, i]),
-      ...daily.map((id, k) => ['daily', {...state, _dailyId: id}, dots - 1])];
-    // Render everything first: compressed pages differ in size, so check they all fit.
-    const bpp = paletteBpp(panelOf(state).palette), frames = [];
-    for (let i = 0; i < jobs.length; i++) {
-      const [key, s, idx] = jobs[i];
-      setStatus(t('st_rendering', {i: i + 1, n: jobs.length}));
-      const ink = await renderPage(key, s, idx, dots);
-      frames.push({data: dxf ? encodeFrame(ink, W, H, bpp) : pack(ink), overlay: ink.overlay});
-    }
+    const jobs = [...entries.map((e, i) => [e.key, e.s, i, e.part || 0]),
+      ...daily.map((id, k) => ['daily', {...state, _dailyId: id}, dots - 1, 0])];
+    // Render everything first, a few pages at a time (sprites and PokeAPI data load in
+    // parallel): compressed pages differ in size, so check they all fit before sending.
+    const bpp = paletteBpp(panelOf(state).palette), frames = new Array(jobs.length);
+    let next = 0, done = 0;
+    await Promise.all(Array.from({length: Math.min(4, jobs.length)}, async () => {
+      while (next < jobs.length) {
+        const i = next++, [key, s, idx, part] = jobs[i];
+        const ink = await renderPage(key, s, idx, dots, part);
+        const data = dxf ? encodeFrame(ink, W, H, bpp) : pack(ink);
+        frames[i] = {data, ov: overlayArg(ink.overlay), crc: crc32(data)};
+        setStatus(t('st_rendering', {i: ++done, n: jobs.length}));
+      }
+    }));
     const bytes = frames.reduce((a, f) => a + f.data.length, 0);
     if (dxf) {
       const blk = n => Math.ceil(n / 4096) * 4096;     // on flash: whole blocks, +1 for the counter box, +1 upload in progress
       const need = frames.reduce((a, f) => a + blk(f.data.length) + 4096, 0) + blk(Math.max(...frames.map(f => f.data.length)));
       if (need > deviceInfo.pageBudget) { setStatus(t('st_too_big', {n: Math.ceil(need / 1024), m: Math.floor(deviceInfo.pageBudget / 1024)})); return; }
+    }
+    // pages the board already holds, byte for byte, are not sent again
+    let have = new Map();
+    if (feat.includes('pages')) {
+      try { have = new Map((await (await fetch(api('/api/pages'), {cache: 'no-store'})).json()).map(p => [p.slot, p])); } catch {}
     }
     setStatus(t('st_glyphs'));
     const gd = new FormData();
@@ -67,19 +90,25 @@ async function sendAll() {
     const gr = await fetch(api('/api/glyphs'), {method: 'POST', body: gd});
     if (gr.status === 404) note = ' · ' + t('st_old_fw');
     else if (!gr.ok) throw new Error(`glyphs: HTTP ${gr.status}`);
+    let skipped = 0;
     for (let i = 0; i < frames.length; i++) {
+      const f = frames[i], h = have.get(i);
+      if (h && h.size === f.data.length && (h.crc >>> 0) === f.crc && String(h.ov || '') === f.ov) { skipped++; continue; }
       setStatus(t('st_sending', {i: i + 1, n: frames.length}));
       const fd = new FormData();
-      fd.append('frame', new Blob([frames[i].data], {type: 'application/octet-stream'}), 'frame.bin');
-      const o = frames[i].overlay;
-      const ov = o ? '&ov=' + [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep].join(',') : '';
-      const r = await fetch(api(`/api/frame?slot=${i}${ov}`), {method: 'POST', body: fd});
+      fd.append('frame', new Blob([f.data], {type: 'application/octet-stream'}), 'frame.bin');
+      const r = await fetch(api(`/api/frame?slot=${i}${f.ov ? '&ov=' + f.ov : ''}`), {method: 'POST', body: fd});
       if (!r.ok) throw new Error(`${t('st_page', {i: i + 1})}: HTTP ${r.status}`);
     }
-    note = ' · ' + t('st_sent_kb', {kb: Math.ceil(bytes / 1024)}) + note;
+    note = ' · ' + t('st_sent_kb', {kb: Math.ceil(bytes / 1024)}) + (skipped ? ' · ' + t('st_skipped', {n: skipped}) : '') + note;
+    const mins = k => Math.max(0, Math.round(Number((state.pageMin || {})[k]) || 0));
     const body = new URLSearchParams({count: entries.length, interval: Math.max(0, Number(state.interval) || 0),
       daily: daily.length, sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
-      tz: state.tz || DEFAULTS.tz, now: Math.floor(Date.now() / 1000)});
+      tz: state.tz || DEFAULTS.tz, now: Math.floor(Date.now() / 1000),
+      qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
+      iv: [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(','),
+      flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
+      batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10))});
     const r = await fetch(api('/api/rotation'), {method: 'POST', body});
     if (!r.ok) throw new Error(`${t('st_rotation')}: HTTP ${r.status}`);
     await saveState(true);
@@ -196,6 +225,7 @@ async function applyUiLang() {
   await buildHofBox();
   buildBackupBox();
   buildCollectionBox();
+  buildPagesBox();
   buildDailyBox();
   buildShowdownBox();
   buildPkxBox();
@@ -216,6 +246,7 @@ $('uiLang').addEventListener('input', async () => {
 });
 
 $('send').onclick = sendAll;
+$('png').onclick = exportPng;
 $('next').onclick = nextOnDevice;
 $('save').onclick = () => saveState(false);
 $('autofill').onclick = autofill;

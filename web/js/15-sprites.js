@@ -118,6 +118,10 @@ function blitFit(ink, sp, ax, ay, aw, ah, opt) {
     if (opt.under && (ink[py * W + px] || isProtected(px, py))) continue;
     const red = opt.hasRed && r > 140 && r > g * 1.5 && r > b * 1.5;
     const L = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (opt.palette && !opt.icon) {   // colour panels: line art black, the rest dithered between the nearest inks
+      ink[py * W + px] = L <= LINE_L ? 1 : paletteInk(r, g, b, opt, (BAYER[4][py & 3][px & 3] + 0.5) / 16);
+      continue;
+    }
     let dark = Math.min(1, Math.max(0, (255 - L) / 255 + opt.contrast / 100));
     if (!opt.icon) {
       // scaled sprites (team, Hall of Fame): the sprite's own line art (its darkest
@@ -138,6 +142,20 @@ function blitFit(ink, sp, ax, ay, aw, ah, opt) {
     ink[py * W + px] = red && opt.faint == null ? 2 : dark > (BAYER[4][py & 3][px & 3] + 0.5) / 16 ? 1 : 0;
   }
 }
+// Ordered dither against the panel's inks: the threshold t (0..1) of the pixel's
+// place in the pattern nudges the colour before the nearest ink is taken.
+function paletteInk(r, g, b, opt, t) {
+  const k = (t - 0.5) * 120 - opt.contrast * 1.5;
+  r += k; g += k; b += k;
+  let best = 0, bd = Infinity;
+  for (const c of opt.palette) {
+    const [pr, pg, pb] = INKS[c].rgb;
+    const dist = 2 * (r - pr) ** 2 + 4 * (g - pg) ** 2 + 3 * (b - pb) ** 2;
+    if (dist < bd) { bd = dist; best = c; }
+  }
+  return best;
+}
+
 function blitSprite(ink, sp, ax, ay, aw, ah, opt) {
   if (opt.fit) return blitFit(ink, sp, ax, ay, aw, ah, opt);
   const scale = opt.scale || Math.max(1, Math.min(4, Math.floor(Math.min(aw / sp.w, ah / sp.h))));
@@ -178,6 +196,10 @@ function blitSprite(ink, sp, ax, ay, aw, ah, opt) {
       if (px < 0 || py < 0 || px >= W || py >= H) continue;
       if (opt.under && (ink[py * W + px] || isProtected(px, py))) continue;   // keep text/plates on top
       let v;
+      if (opt.palette && opt.faint == null && !opt.crisp) {   // colour panels: dither between the nearest inks
+        ink[py * W + px] = paletteInk(r, g, b, opt, m ? (m[sy][sx] + 0.5) / n : (BAYER[4][py & 3][px & 3] + 0.5) / 16);
+        continue;
+      }
       if (red && opt.faint == null) v = 2;
       else if (opt.crisp) v = dark === 0.5 ? (px + py) & 1 : dark;
       else if (m) v = dark > (m[sy][sx] + 0.5) / n ? 1 : 0;

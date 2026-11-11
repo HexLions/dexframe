@@ -14,7 +14,7 @@ import json
 import re
 from pathlib import Path
 
-LANGS = ['it', 'en']
+LANGS = ['it', 'en', 'es', 'fr', 'de']
 # format -> source file with the ribbon bit properties
 RIBBON_SRC = {'pk4': 'PK4.cs', 'pk5': 'PK5.cs', 'pk6': 'PK6.cs', 'pk7': 'PK7.cs', 'pk8': 'Shared/G8PKM.cs', 'pk9': 'PK9.cs'}
 # format -> location text files (prefix, offsets)

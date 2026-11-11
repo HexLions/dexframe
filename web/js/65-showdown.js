@@ -57,6 +57,7 @@ async function importShowdown(txt) {
     type1: types[0] || '', type2: types[1] || '',
     ability: ab ? locName(ab, lang) : set.ability, nature: na ? locName(na, lang) : set.nature,
     item: it ? locName(it, lang) : set.item,
+    ivs: Object.keys(SD_STATS).map(k => set.ivs[k] ?? 31).join('/'), evs: Object.keys(SD_STATS).map(k => set.evs[k] ?? 0).join('/'),
   });
   for (let i = 0; i < 4; i++) {
     state['move' + i] = mv[i] ? locName(mv[i], lang) : (set.moves[i] || '');

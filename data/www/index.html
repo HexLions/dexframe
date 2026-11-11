@@ -78,6 +78,12 @@ details.adv .grid{margin-top:8px}
 .coll .card button{padding:4px 8px}
 .trbox textarea{min-height:12em;font:13px/1.35 ui-monospace,monospace}
 .muted{font-size:12px;color:var(--muted)}
+.pglist{display:flex;flex-direction:column;gap:4px}
+.pgrow{display:flex;align-items:center;gap:6px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+.pgrow label{flex:1;min-width:0}
+.pgrow input[type=number]{width:72px;flex:none}
+.pgrow button{padding:4px 8px;flex:none}
+#pagesbox{margin-bottom:10px}
 </style>
 </head>
 <body>
@@ -93,6 +99,7 @@ details.adv .grid{margin-top:8px}
       <button id="next" data-i18n="next"></button>
       <button id="save" data-i18n="save"></button>
       <button id="autofill" data-i18n="autofill"></button>
+      <button id="png" data-i18n="png"></button>
       <span id="status">…</span>
     </div>
   </section>
@@ -107,24 +114,31 @@ details.adv .grid{margin-top:8px}
 const W = 400, H = 300, PLANE = W * H / 8;
 
 // Inks, by global code (the same numbers the firmware uses, see include/frame_codec.h).
+// rgb: how the ink looks (preview, colour matching); css: the pure colour pages draw
+// with on the work canvas, which canvasToInk() turns back into the ink code.
 const INKS = [
-  {name: 'white', rgb: [255, 255, 255]}, {name: 'black', rgb: [17, 17, 17]}, {name: 'red', rgb: [200, 30, 30]},
-  {name: 'yellow', rgb: [236, 196, 20]}, {name: 'blue', rgb: [30, 70, 180]}, {name: 'green', rgb: [40, 130, 60]},
-  {name: 'orange', rgb: [225, 120, 30]}];
+  {name: 'white', rgb: [255, 255, 255], css: '#fff'}, {name: 'black', rgb: [17, 17, 17], css: '#000'},
+  {name: 'red', rgb: [200, 30, 30], css: '#f00'}, {name: 'yellow', rgb: [236, 196, 20], css: '#ff0'},
+  {name: 'blue', rgb: [30, 70, 180], css: '#00f'}, {name: 'green', rgb: [40, 130, 60], css: '#0f0'},
+  {name: 'orange', rgb: [225, 120, 30], css: '#f80'}];
+const inkCode = name => INKS.findIndex(k => k.name === name);
 // Panels this page knows; a connected board describes its own in /api/info.
 const PANELS = {
   bw: {palette: ['white', 'black']},
   bwr: {palette: ['white', 'black', 'red']},
-  bwry: {palette: ['white', 'black', 'red', 'yellow']}};
+  bwry: {palette: ['white', 'black', 'red', 'yellow']},
+  color6: {palette: ['white', 'black', 'red', 'yellow', 'blue', 'green'], previewOnly: true}};   // no firmware build yet
 const panelOf = s => PANELS[s.panel] || PANELS.bw;
 const hasInk = (s, name) => panelOf(s).palette.includes(name);
+const isColour = s => panelOf(s).palette.length > 3;      // yellow and beyond: coloured sprites and type colours
+const accent = s => hasInk(s, 'red') ? '#f00' : '#000';
 // Bits per pixel of a frame for a palette: enough for its highest ink code.
 const paletteBpp = pal => { const top = Math.max(...pal.map(n => INKS.findIndex(k => k.name === n))); return top > 3 ? 3 : top > 1 ? 2 : 1; };
 
 // ---------- i18n ----------
 // Two independent languages: `uiLang` for this page, `dispLang` for what the
 // e-paper shows. Add a language by adding a block to LANGS, UI, DISP and TYPE_NAMES.
-const LANGS = {it: 'Italiano', en: 'English'};
+const LANGS = {it: 'Italiano', en: 'English', es: 'Español', fr: 'Français', de: 'Deutsch'};
 
 const UI = {
   it: {
@@ -212,7 +226,7 @@ const UI = {
     g_system: 'Sistema', sy_info: 'Firmware {v} · memoria {u} / {t} KB · Wi-Fi: {w}{k}', sy_key_on: ' · chiave attiva',
     sy_nodev: 'Collega un display per aggiornarlo.', sy_key: 'Chiave del display (se impostata)',
     sy_fw: 'Aggiorna firmware (.bin)…', sy_ui: 'Aggiorna interfaccia (cartella data/www)…', sy_setup: 'Wi-Fi e sicurezza →', sy_reboot: 'Riavvia',
-    sy_fw_info: 'Usa dexframe-bw-ota.bin o dexframe-bwr-ota.bin (o .pio/build/<env>/firmware.bin). Pagine, dati e Wi-Fi restano.',
+    sy_fw_info: 'Usa dexframe-<pannello>-ota.bin (o .pio/build/<env>/firmware.bin). Pagine, dati e Wi-Fi restano.',
     sy_ui_info: 'Scegli la cartella data/www del progetto: copia i file uno per uno, senza cancellare pagine e dati (al contrario di uploadfs).',
     sy_sending: 'Invio {f} ({i}/{n})…', sy_fw_ok: 'Firmware aggiornato, il display si riavvia', sy_ui_ok: 'Interfaccia aggiornata: {n} file, ricarica la pagina',
     sy_err: 'Errore: {e}', sy_key_bad: 'chiave mancante o sbagliata (Sistema → Chiave)',
@@ -311,7 +325,7 @@ const UI = {
     g_system: 'System', sy_info: 'Firmware {v} · storage {u} / {t} KB · Wi-Fi: {w}{k}', sy_key_on: ' · key on',
     sy_nodev: 'Connect a display to update it.', sy_key: 'Display key (if set)',
     sy_fw: 'Update firmware (.bin)…', sy_ui: 'Update web UI (data/www folder)…', sy_setup: 'Wi-Fi and security →', sy_reboot: 'Restart',
-    sy_fw_info: 'Use dexframe-bw-ota.bin or dexframe-bwr-ota.bin (or .pio/build/<env>/firmware.bin). Pages, data and Wi-Fi are kept.',
+    sy_fw_info: 'Use dexframe-<panel>-ota.bin (or .pio/build/<env>/firmware.bin). Pages, data and Wi-Fi are kept.',
     sy_ui_info: 'Pick the project data/www folder: files are copied one by one, pages and data are kept (unlike uploadfs).',
     sy_sending: 'Sending {f} ({i}/{n})…', sy_fw_ok: 'Firmware updated, the display restarts', sy_ui_ok: 'Web UI updated: {n} files, reload the page',
     sy_err: 'Error: {e}', sy_key_bad: 'missing or wrong key (System → Key)',
@@ -426,6 +440,11 @@ const DEFAULTS = {
   pg_daily:false, dailyCount:7, dailySeed:0,
   collection:[], colRotation:true,
   sleep:false, awake:3, tz:'CET-1CEST,M3.5.0,M10.5.0/3',
+  ivs:'31/31/31/31/31/31', evs:'4/0/0/252/0/252',
+  pg_countdown:false, pg_movedex:false, pg_radar:false, pg_evo:false, pg_dexinfo:false,
+  cdTitle:'', cdDate:'', teamPer:6, pageOrder:[], pageMin:{},
+  quietOn:false, quietFrom:'23:00', quietTo:'07:00', flip:false, btnDouble:0, btnLong:0, batLow:3.5, fullEvery:10,
+  pageStyle:'classic', previewPanel:'',
 };
 
 const typeOpts = (blank) => () => [...(blank ? [['', '—']] : []), ...TYPE_KEYS.map(k => [k, typeName(k, state.uiLang)])];
@@ -437,7 +456,8 @@ const GROUPS = [
     ['nature','nature'],['ability','ability'],['item','item'],['language','language']]],
   ['moves', [0,1,2,3].flatMap(i => [['move' + i, ['move', {n: i + 1}]], ['mtype' + i, 'mtype', 'select', typeOpts(false)]])],
   ['stats', [['ps','ps','number'],['att','att','number'],['dif','dif','number'],
-    ['atsp','atsp','number'],['dfsp','dfsp','number'],['vel','vel','number']]],
+    ['atsp','atsp','number'],['dfsp','dfsp','number'],['vel','vel','number'],
+    ['ivs','ivs','text','wide'],['evs','evs','text','wide']]],
   ['story', [['ot','ot'],['tid','tid'],['met','met'],['region','region'],
     ['metPlace','metPlace'],['deposited','deposited'],['characteristic','characteristic','text','wide'],
     ['since','since','text','wide']]],
@@ -452,11 +472,19 @@ const GROUPS = [
     ['shiny','shiny','checkbox'],
     ['panel','panel','select',() => Object.keys(PANELS).map(k => [k, panelLabel(k)])],
     ['dither','dither','select',() => [['blocks', t('dt_blocks')],['threshold', t('dt_threshold')]]],
-    ['contrast','contrast','number'],['interval','interval','number'],['deviceUrl','deviceUrl','text','wide'],
-    ['sleep','sleep','checkbox','wide'],['awake','awake','number'],['tz','tz','text','adv']]],
-  ['pages', [['pg_cover','pg_cover','checkbox'],['pg_moves','pg_moves','checkbox'],['pg_stats','pg_stats','checkbox'],
-    ['pg_weak','pg_weak','checkbox'],['pg_story','pg_story','checkbox'],['pg_ribbons','pg_ribbons','checkbox'],
-    ['pg_trainer','pg_trainer','checkbox'],['pg_team','pg_team','checkbox'],['pg_hof','pg_hof','checkbox'],['pg_daily','pg_daily','checkbox'],
+    ['contrast','contrast','number'],
+    ['pageStyle','pageStyle','select',() => ['classic', 'accent', 'light'].map(k => [k, t('ps_' + k)])],
+    ['previewPanel','previewPanel','select',() => [['', t('pv_same')], ...Object.keys(PANELS).map(k => [k, panelLabel(k)])]],
+    ['interval','interval','number'],['deviceUrl','deviceUrl','text','wide'],
+    ['quietOn','quietOn','checkbox','wide'],['quietFrom','quietFrom','time'],['quietTo','quietTo','time'],
+    ['flip','flip','checkbox','wide'],
+    ['btnDouble','btnDouble','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
+    ['btnLong','btnLong','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
+    ['sleep','sleep','checkbox','wide'],['awake','awake','number'],
+    ['batLow','batLow','number'],['fullEvery','fullEvery','number'],['tz','tz','text','adv']]],
+  // which pages, their order and minutes: the list built by buildPagesBox()
+  ['pages', [['teamPer','teamPer','select',() => [6, 3, 2].map(k => [k, t('tp_' + k)])],
+    ['cdTitle','cdTitle'],['cdDate','cdDate'],
     ['dailyCount','dailyCount','number','wide']]],
   ['system', []],
   ['backup', []],
@@ -469,6 +497,457 @@ const $ = id => document.getElementById(id);
 const setStatus = msg => { $('status').textContent = msg; };
 const up = v => String(v ?? '').toUpperCase();
 
+// ---------- i18n: strings added with 1.6 (pages, settings) ----------
+Object.assign(UI.it, {
+  png: 'Scarica PNG', st_skipped: '{n} già sul display',
+  pg_info: 'Spunta le pagine da mostrare, ordinale con le frecce. Minuti: quanto resta sullo schermo quella pagina (vuoto = il tempo generale).',
+  pg_min: 'Minuti per questa pagina',
+  pg_countdown: 'Conto alla rovescia', pg_movedex: 'Dettaglio mosse', pg_radar: 'Grafico IV/EV', pg_evo: 'Evoluzioni', pg_dexinfo: 'Scheda Pokédex',
+  teamPer: 'Squadra e Sala d\'onore: Pokémon per pagina', tp_6: '6 (una pagina)', tp_3: '3 (due pagine, sprite più grandi)', tp_2: '2 (tre pagine, sprite a 2×)',
+  cdTitle: 'Conto alla rovescia: titolo', cdDate: 'Conto alla rovescia: data (gg/mm/aaaa)',
+  ivs: 'IV (PS/Att/Dif/Att.Sp/Dif.Sp/Vel)', evs: 'EV (PS/Att/Dif/Att.Sp/Dif.Sp/Vel)',
+  pageStyle: 'Stile delle pagine', ps_classic: 'Classico (testata nera)', ps_accent: 'Testata nel colore d\'accento', ps_light: 'Chiaro (testata bianca)',
+  previewPanel: 'Anteprima colori', pv_same: 'Come il display', pn_color6: '6 colori (solo anteprima)',
+  quietOn: 'Orario notturno: nessun cambio pagina automatico', quietFrom: 'Dalle', quietTo: 'Alle',
+  flip: 'Schermo capovolto (180°)',
+  btnDouble: 'Pulsante: doppio click', btnLong: 'Pulsante: pressione lunga (1 s)',
+  ba_0: 'Nessuna azione', ba_1: 'Pagina successiva', ba_2: 'Pagina precedente', ba_3: 'Refresh completo',
+  batLow: 'Soglia batteria scarica (V)', fullEvery: 'Refresh completo ogni N aggiornamenti del contatore',
+});
+Object.assign(UI.en, {
+  png: 'Download PNG', st_skipped: '{n} already on the display',
+  pg_info: 'Tick the pages to show and order them with the arrows. Minutes: how long that page stays on screen (empty = the general time).',
+  pg_min: 'Minutes for this page',
+  pg_countdown: 'Countdown', pg_movedex: 'Move details', pg_radar: 'IV/EV chart', pg_evo: 'Evolutions', pg_dexinfo: 'Pokédex entry',
+  teamPer: 'Team and Hall of Fame: Pokémon per page', tp_6: '6 (one page)', tp_3: '3 (two pages, larger sprites)', tp_2: '2 (three pages, sprites at 2×)',
+  cdTitle: 'Countdown: title', cdDate: 'Countdown: date (dd/mm/yyyy)',
+  ivs: 'IVs (HP/Atk/Def/SpA/SpD/Spe)', evs: 'EVs (HP/Atk/Def/SpA/SpD/Spe)',
+  pageStyle: 'Page style', ps_classic: 'Classic (black header)', ps_accent: 'Header in the accent colour', ps_light: 'Light (white header)',
+  previewPanel: 'Preview colours', pv_same: 'Same as the display', pn_color6: '6 colours (preview only)',
+  quietOn: 'Quiet hours: no automatic page change', quietFrom: 'From', quietTo: 'To',
+  flip: 'Screen upside down (180°)',
+  btnDouble: 'Button: double click', btnLong: 'Button: long press (1 s)',
+  ba_0: 'Nothing', ba_1: 'Next page', ba_2: 'Previous page', ba_3: 'Full refresh',
+  batLow: 'Low battery threshold (V)', fullEvery: 'Full refresh every N counter updates',
+});
+Object.assign(DISP.it, {
+  countdown: 'Conto alla rovescia', days_left: 'Giorni mancanti', cd_date: 'Data',
+  movedex: 'Dettaglio mosse', pow: 'Pot.', acc: 'Prec.', pp: 'PP',
+  cat_physical: 'Fisico', cat_special: 'Speciale', cat_status: 'Stato',
+  radar: 'IV / EV', evo: 'Evoluzioni', evo_trade: 'Scambio', evo_friend: 'Affetto',
+  dexinfo: 'Pokédex', height: 'Altezza', weight: 'Peso', egg: 'Gruppo uova',
+});
+Object.assign(DISP.en, {
+  countdown: 'Countdown', days_left: 'Days left', cd_date: 'Date',
+  movedex: 'Move details', pow: 'Pow.', acc: 'Acc.', pp: 'PP',
+  cat_physical: 'Physical', cat_special: 'Special', cat_status: 'Status',
+  radar: 'IVs / EVs', evo: 'Evolutions', evo_trade: 'Trade', evo_friend: 'Friendship',
+  dexinfo: 'Pokédex', height: 'Height', weight: 'Weight', egg: 'Egg group',
+});
+// ---------- i18n: Spanish, French, German ----------
+// Same keys as UI.en / DISP.en; a missing key falls back to English.
+UI.es = {
+  lang: 'Idioma', send: 'Enviar todas las páginas', next: 'Página siguiente en la pantalla', save: 'Guardar datos',
+  autofill: 'Nombre/tipos desde PokeAPI',
+  g_pokemon: 'Pokémon', g_moves: 'Movimientos', g_stats: 'Características', g_story: 'Historia', g_ribbons: 'Cintas',
+  g_display: 'Pantalla', g_pages: 'Páginas',
+  dex: 'N.º Pokédex', name: 'Nombre', level: 'Nivel', gender: 'Sexo', type1: 'Tipo 1', type2: 'Tipo 2',
+  nature: 'Naturaleza', ability: 'Habilidad', language: 'Idioma del juego', move: 'Movimiento {n}', mtype: 'Tipo',
+  ps: 'PS', att: 'Ataque', dif: 'Defensa', atsp: 'At. Esp.', dfsp: 'Def. Esp.', vel: 'Velocidad',
+  ot: 'EO', tid: 'ID', met: 'Encontrado el', region: 'Región', metPlace: 'Lugar del encuentro',
+  deposited: 'Depositado el', characteristic: 'Característica',
+  ribbons: 'Una por línea: "archivo.png" o "Nombre | archivo.png"', ribbonBase: 'URL base de las imágenes (opcional, p. ej. https://…/carpeta/)',
+  adv: 'Avanzado: texto manual, URL de imágenes, comprobación de archivos', sel_title: 'Seleccionadas ({n}) — en el orden de la pantalla',
+  sel_empty: 'Ninguna cinta seleccionada: elige en la cuadrícula de abajo.', sel_rename: 'Nombre automático: {n}',
+  up: 'Subir', down: 'Bajar', remove: 'Quitar',
+  g_trainer: 'Entrenador', trName: 'Nombre del entrenador', trId: 'ID del entrenador', trGame: 'Juego', trStart: 'Aventura iniciada el',
+  trTime: 'Tiempo de juego', trDex: 'Pokédex (capturados)', trBadges: 'Medallas (número, si no eliges iconos)', team: 'Equipo (números de Pokédex, o elige en la lista de abajo)',
+  tr_sprite: 'Sprite del entrenador', tr_upload: 'Subir imagen…', tr_clear: 'Quitar imagen',
+  tr_none: 'Sin imagen: la pantalla muestra una silueta genérica.', tr_custom: 'Tu imagen subida ({w}×{h})',
+  tr_legend: 'De tu carpeta trainers/: {n}', tr_search: 'Buscar entrenador…', tr_allgen: 'Todas las gen.',
+  tr_bad: 'Imagen ilegible', pg_trainer: 'Entrenador',
+  trBase: 'URL base de los sprites de entrenador (opcional)', trFile: 'Archivo del sprite (p. ej. nombre.png)',
+  tr_url: 'Desde URL: {u}', tr_url_bad: 'Imagen de la URL no utilizable (no encontrada, o el sitio no permite cargarla desde otras páginas): descárgala y usa "Subir imagen…".',
+  style: 'Sprite', sp_rb: 'Rojo/Azul', sp_yellow: 'Amarillo', sp_gold: 'Oro', sp_silver: 'Plata', sp_crystal: 'Cristal',
+  sp_rs: 'Rubí/Zafiro', sp_emerald: 'Esmeralda', sp_frlg: 'Rojo Fuego/Verde Hoja', sp_dp: 'Diamante/Perla',
+  sp_pt: 'Platino', sp_hgss: 'HeartGold/SoulSilver', sp_bw: 'Negro/Blanco',
+  st_title: 'Estilo de sprite (haz clic para elegir)', st_max: 'hasta el n.º {n}: más allá se usa el sprite por defecto',
+  mon_pick: 'Elige el Pokémon de la lista', mon_search: 'Buscar por nombre o número…', mon_allgen: 'Todas las gen.',
+  mon_count: '{n} Pokémon · haz clic para elegir', mon_count_multi: '{n} Pokémon · haz clic para añadir/quitar (máx. {m})',
+  team_title: 'Equipo ({n}/6) — en el orden de la pantalla', team_empty: 'Ningún Pokémon: elige en la lista.',
+  hof_title: 'Salón de la Fama ({n}/6)', hof_follow: 'Usar el equipo de la sección Entrenador', hof_own: 'El Salón de la Fama tiene su propio equipo',
+  bd_title: 'Medallas ({n}/8)', bd_none: 'Ningún icono elegido: la pantalla muestra {n} casillas llenas (campo "Medallas").',
+  rg_kanto: 'Kanto', rg_johto: 'Johto', rg_hoenn: 'Hoenn', rg_sinnoh: 'Sinnoh', rg_unova: 'Teselia', rg_kalos: 'Kalos', rg_galar: 'Galar', rg_paldea: 'Paldea', rg_other: 'Otras',
+  bd_clear: 'Vaciar', pg_team: 'Equipo', k_web: 'PokeAPI', k_own: 'tuyas',
+  shiny: 'Variocolor', panel: 'Panel', pn_bw: 'Blanco/Negro', pn_bwr: 'Blanco/Negro/Rojo', pn_bwry: 'Blanco/Negro/Rojo/Amarillo',
+  dither: 'Sombreado del sprite', dt_blocks: 'Tramado dentro de cada píxel', dt_threshold: 'Solo umbral',
+  contrast: 'Contraste (-50..50)', interval: 'Cambio de página (min, 0 = solo botón)', dispLang: 'Idioma de la pantalla',
+  deviceUrl: 'Dirección de la pantalla (solo al abrir este archivo desde un PC, p. ej. http://dexframe.local)', connect: 'Conectar',
+  tr_catalog: 'De Pokémon Showdown: {n} (la pantalla descarga solo el que elijas)', tr_need_dev: 'conecta la pantalla: es ella la que descarga el sprite', tr_dl: 'Descargando {n} en la pantalla…', tr_dl_ok: '{n} listo', tr_dl_err: 'Sprite no descargado: {e}', tr_other: 'Sin gen.', tr_count: '{n} entrenadores',
+  g_hof: 'Salón de la Fama', pg_hof: 'Salón de la Fama', hofRegion: 'Región', hofDate: 'Fecha',
+  hofStrength: 'Intensidad del fondo (0-100)', hof_team: 'El equipo es el de la sección Entrenador: {t}',
+  hof_bg: 'Fondo', hof_bg_up: 'Subir fondo…', hof_bg_clear: 'Quitar fondo',
+  hof_bg_none: 'Sin imagen: fondo original de rayos de luz.', hof_bg_custom: 'Tu fondo subido',
+  g_backup: 'Copia de seguridad', bk_export: 'Exportar configuración', bk_import: 'Importar configuración…',
+  bk_info: 'Guarda toda la configuración en un archivo .json: Pokémon, movimientos, cintas, entrenador, equipo, Salón de la Fama, idiomas e imágenes subidas. Las imágenes de tus carpetas (cintas, entrenadores) no se incluyen: el archivo solo guarda cuáles elegiste.',
+  bk_done: 'Configuración exportada', bk_loaded: 'Configuración importada', bk_bad: 'Archivo no válido: {e}',
+  pg_cover: 'Retrato', pg_moves: 'Movimientos', pg_stats: 'Características', pg_story: 'Historia', pg_ribbons: 'Cintas',
+  pk_search: 'Buscar cinta o marca (nombre, descripción, gen.)…', pk_all: 'Todo', pk_ribbon: 'Cintas', pk_mark: 'Marcas',
+  pk_allgen: 'Todas las gen.', pk_only: 'Solo seleccionadas',
+  pk_count: '{n} resultados · {s} seleccionadas · haz clic para añadir/quitar', k_ribbon: 'Cinta', k_mark: 'Marca',
+  hint: 'Imágenes de cintas (✗ = no encontrada o bloqueada por CORS, se usa la escarapela):', embedded: 'incluidas',
+  st_connected: 'Conectado: {w}×{h} {mode}, página {c}/{n}',
+  st_preview: 'Modo vista previa (ningún DexFrame accesible)', st_saved_browser: 'Guardado solo en este navegador',
+  st_saved: 'Datos guardados en la pantalla', st_save_err: 'Error al guardar: {e}', st_no_device: 'Ninguna pantalla conectada',
+  st_no_pages: 'Ninguna página activa', st_sending: 'Enviando página {i}/{n}…', st_page: 'página {i}',
+  st_rotation: 'rotación', st_sent: '{n} páginas enviadas, actualizando', st_send_fail: 'Envío fallido: {e}',
+  st_next: 'Página siguiente en camino', st_err: 'Error: {e}', st_autofill: 'Nombre y tipos actualizados',
+  st_pokeapi_err: 'PokeAPI inaccesible: {e}', st_sprite: 'Sprite no encontrado (el teléfono/PC necesita internet)',
+  item: 'Objeto equipado', since: 'Juntos desde (dd/mm/aaaa; vacío = fecha del encuentro)',
+  pg_weak: 'Debilidades', pg_daily: 'Pokémon del día', dailyCount: 'Pokémon del día: cuántos (1-14, uno por día por turno)',
+  daily_shuffle: 'Nuevo sorteo', daily_info: 'Hoy: n.º {t} · ciclo de {n}: {l}',
+  g_collection: 'Colección', colRotation: 'Poner en la rotación un retrato de cada Pokémon de la colección',
+  col_save: 'Guardar el Pokémon del editor en la colección', col_load: 'Editar', col_update: 'Sobrescribir',
+  col_preview: 'Vista previa', col_empty: 'Colección vacía: rellena el Pokémon en las secciones de arriba y pulsa "Guardar…".',
+  col_info: '{n} Pokémon en la colección · {p} páginas en rotación (+{d} del día) · máx. {m} en la pantalla',
+  st_sent_kb: '{kb} KB',
+  col_loaded: '{n} cargado en el editor', col_saved: '{n} guardado en la colección', col_upd: '{n} actualizado',
+  col_confirm: '¿Quitar a {n} de la colección?',
+  sd_title: 'Importar set de Showdown', sd_ph: 'Pega un set en el formato de exportación de Pokémon Showdown…', sd_go: 'Importar set',
+  sd_info: 'Rellena nombre, tipos, objeto, habilidad, naturaleza, movimientos y características (calculadas con EV/IV/nivel). Historia y cintas no se tocan.',
+  sd_busy: 'Importando desde PokeAPI…', sd_ok: 'Set importado: {n}', sd_err: 'Importación fallida: {e}',
+  sleep: 'Ahorro de energía (deep sleep, para batería)', awake: 'Minutos en línea tras pulsar el botón/encender',
+  tz: 'Zona horaria (POSIX TZ, por defecto Italia)',
+  st_too_many: 'Demasiadas páginas: {n}, la pantalla admite {m}',
+  st_too_big: 'Las páginas ocupan {n} KB, en la pantalla caben {m}: quita alguna', st_rendering: 'Preparando página {i}/{n}…',
+  st_size: 'Esta versión de la interfaz dibuja páginas de {w}×{h}: el panel es de {pw}×{ph}', st_glyphs: 'Enviando cifras del contador…',
+  st_bat: 'batería {v} V', st_old_fw: 'firmware antiguo: sin contador de días (actualiza el firmware)',
+  pk_title: 'Importar de un archivo PKHeX (.pk4 – .pk9)', pk_pick: 'Elegir archivo .pk…',
+  pk_info: 'Exporta el Pokémon desde PKHeX (clic derecho en la casilla → Export/Save file) y cárgalo aquí. Lee especie, mote, nivel, naturaleza, habilidad, objeto, movimientos, características, variocolor, EO, ID, fecha y lugar del encuentro, característica y cintas. El archivo no sale del navegador.',
+  pk_story: 'Actualizar también la historia (EO, ID, datos del encuentro, característica)', pk_ribbons: 'Sustituir las cintas por las del archivo',
+  pk_ok: 'Importado {name} de {fmt} ({game}) · {ribbons} cintas', pk_unmatched: '{n} cintas sin imagen en tu leyenda',
+  pk_err: 'Importación fallida: {e}', pk_ext: 'extensión no admitida (usa .pk4 … .pk9)', pk_bad: 'el archivo no parece un Pokémon válido',
+  pk_egg: 'es un Huevo',
+  g_system: 'Sistema', sy_info: 'Firmware {v} · memoria {u} / {t} KB · Wi-Fi: {w}{k}', sy_key_on: ' · clave activa',
+  sy_nodev: 'Conecta una pantalla para actualizarla.', sy_key: 'Clave de la pantalla (si está definida)',
+  sy_fw: 'Actualizar firmware (.bin)…', sy_ui: 'Actualizar interfaz web (carpeta data/www)…', sy_setup: 'Wi-Fi y seguridad →', sy_reboot: 'Reiniciar',
+  sy_fw_info: 'Usa dexframe-<panel>-ota.bin (o .pio/build/<env>/firmware.bin). Páginas, datos y Wi-Fi se conservan.',
+  sy_ui_info: 'Elige la carpeta data/www del proyecto: los archivos se copian uno a uno, páginas y datos se conservan (a diferencia de uploadfs).',
+  sy_sending: 'Enviando {f} ({i}/{n})…', sy_fw_ok: 'Firmware actualizado, la pantalla se reinicia', sy_ui_ok: 'Interfaz web actualizada: {n} archivos, recarga la página',
+  sy_err: 'Error: {e}', sy_key_bad: 'clave ausente o incorrecta (Sistema → Clave)',
+  sy_wifi: 'Red Wi-Fi', sy_scan: 'Buscar', sy_scanning: 'Buscando…', sy_ssid: 'Nombre de la red (SSID)', sy_pass: 'Contraseña',
+  sy_wsave: 'Guardar y reiniciar', sy_wcur: 'Conectado a: {n}',
+  sy_wconfirm: 'La pantalla se reinicia y prueba "{n}". Con una contraseña incorrecta vuelve a abrir la red DexFrame-Setup. ¿Continuar?',
+  sy_wsaved: 'Guardado: la pantalla se une a {n}. En una red nueva también cambia su dirección (prueba dexframe.local)',
+  sy_reset_t: 'Restablecer de fábrica', sy_reset: 'Restablecer de fábrica…',
+  sy_reset_i: 'Borra ajustes, Wi-Fi, clave, páginas, datos guardados y sprites descargados, y reinicia en modo configuración. Solo quedan los archivos de la interfaz web. Exporta antes una copia de seguridad.',
+  sy_reset_c1: '¿Borrar TODO en la pantalla (ajustes, Wi-Fi, páginas, datos)? No se puede deshacer.',
+  sy_reset_c2: 'Escribe RESET para confirmar', sy_reset_ok: 'Restablecido: únete a la red DexFrame-Setup para configurarla de nuevo',
+  sy_old_fw: 'requiere firmware 1.4: actualízalo primero (Actualizar firmware)',
+  png: 'Descargar PNG', st_skipped: '{n} ya en la pantalla',
+  pg_info: 'Marca las páginas que mostrar y ordénalas con las flechas. Minutos: cuánto permanece esa página en pantalla (vacío = el tiempo general).',
+  pg_min: 'Minutos para esta página',
+  pg_countdown: 'Cuenta atrás', pg_movedex: 'Detalle de movimientos', pg_radar: 'Gráfico IV/EV', pg_evo: 'Evoluciones', pg_dexinfo: 'Ficha Pokédex',
+  teamPer: 'Equipo y Salón de la Fama: Pokémon por página', tp_6: '6 (una página)', tp_3: '3 (dos páginas, sprites más grandes)', tp_2: '2 (tres páginas, sprites a 2×)',
+  cdTitle: 'Cuenta atrás: título', cdDate: 'Cuenta atrás: fecha (dd/mm/aaaa)',
+  ivs: 'IV (PS/Atq/Def/At.Esp/Def.Esp/Vel)', evs: 'EV (PS/Atq/Def/At.Esp/Def.Esp/Vel)',
+  pageStyle: 'Estilo de las páginas', ps_classic: 'Clásico (cabecera negra)', ps_accent: 'Cabecera en el color de acento', ps_light: 'Claro (cabecera blanca)',
+  previewPanel: 'Vista previa de colores', pv_same: 'Como la pantalla', pn_color6: '6 colores (solo vista previa)',
+  quietOn: 'Horario nocturno: sin cambio automático de página', quietFrom: 'Desde', quietTo: 'Hasta',
+  flip: 'Pantalla del revés (180°)',
+  btnDouble: 'Botón: doble clic', btnLong: 'Botón: pulsación larga (1 s)',
+  ba_0: 'Ninguna acción', ba_1: 'Página siguiente', ba_2: 'Página anterior', ba_3: 'Refresco completo',
+  batLow: 'Umbral de batería baja (V)', fullEvery: 'Refresco completo cada N actualizaciones del contador',
+};
+
+UI.fr = {
+  lang: 'Langue', send: 'Envoyer toutes les pages', next: 'Page suivante sur l\'écran', save: 'Enregistrer les données',
+  autofill: 'Nom/types depuis PokeAPI',
+  g_pokemon: 'Pokémon', g_moves: 'Capacités', g_stats: 'Statistiques', g_story: 'Histoire', g_ribbons: 'Rubans',
+  g_display: 'Écran', g_pages: 'Pages',
+  dex: 'N° Pokédex', name: 'Nom', level: 'Niveau', gender: 'Sexe', type1: 'Type 1', type2: 'Type 2',
+  nature: 'Nature', ability: 'Talent', language: 'Langue du jeu', move: 'Capacité {n}', mtype: 'Type',
+  ps: 'PV', att: 'Attaque', dif: 'Défense', atsp: 'Atq. Spé.', dfsp: 'Déf. Spé.', vel: 'Vitesse',
+  ot: 'DO', tid: 'ID', met: 'Rencontré le', region: 'Région', metPlace: 'Lieu de rencontre',
+  deposited: 'Déposé le', characteristic: 'Caractéristique',
+  ribbons: 'Un par ligne : "fichier.png" ou "Nom | fichier.png"', ribbonBase: 'URL de base des images (facultatif, p. ex. https://…/dossier/)',
+  adv: 'Avancé : texte manuel, URL des images, vérification des fichiers', sel_title: 'Sélectionnés ({n}) — dans l\'ordre de l\'écran',
+  sel_empty: 'Aucun ruban sélectionné : choisissez dans la grille ci-dessous.', sel_rename: 'Nom automatique : {n}',
+  up: 'Monter', down: 'Descendre', remove: 'Retirer',
+  g_trainer: 'Dresseur', trName: 'Nom du Dresseur', trId: 'ID du Dresseur', trGame: 'Jeu', trStart: 'Aventure commencée le',
+  trTime: 'Temps de jeu', trDex: 'Pokédex (capturés)', trBadges: 'Badges (nombre, si vous ne choisissez pas d\'icônes)', team: 'Équipe (numéros de Pokédex, ou choisissez dans la liste ci-dessous)',
+  tr_sprite: 'Sprite du Dresseur', tr_upload: 'Importer une image…', tr_clear: 'Retirer l\'image',
+  tr_none: 'Pas d\'image : l\'écran affiche une silhouette générique.', tr_custom: 'Votre image importée ({w}×{h})',
+  tr_legend: 'De votre dossier trainers/ : {n}', tr_search: 'Chercher un Dresseur…', tr_allgen: 'Toutes les gén.',
+  tr_bad: 'Image illisible', pg_trainer: 'Dresseur',
+  trBase: 'URL de base des sprites de Dresseur (facultatif)', trFile: 'Fichier du sprite (p. ex. nom.png)',
+  tr_url: 'Depuis l\'URL : {u}', tr_url_bad: 'Image de l\'URL inutilisable (introuvable, ou le site n\'autorise pas le chargement depuis d\'autres pages) : téléchargez-la et utilisez « Importer une image… ».',
+  style: 'Sprite', sp_rb: 'Rouge/Bleu', sp_yellow: 'Jaune', sp_gold: 'Or', sp_silver: 'Argent', sp_crystal: 'Cristal',
+  sp_rs: 'Rubis/Saphir', sp_emerald: 'Émeraude', sp_frlg: 'Rouge Feu/Vert Feuille', sp_dp: 'Diamant/Perle',
+  sp_pt: 'Platine', sp_hgss: 'HeartGold/SoulSilver', sp_bw: 'Noir/Blanc',
+  st_title: 'Style de sprite (cliquez pour choisir)', st_max: 'jusqu\'au n° {n} : au-delà, le sprite par défaut est utilisé',
+  mon_pick: 'Choisissez le Pokémon dans la liste', mon_search: 'Chercher par nom ou numéro…', mon_allgen: 'Toutes les gén.',
+  mon_count: '{n} Pokémon · cliquez pour choisir', mon_count_multi: '{n} Pokémon · cliquez pour ajouter/retirer (max {m})',
+  team_title: 'Équipe ({n}/6) — dans l\'ordre de l\'écran', team_empty: 'Aucun Pokémon : choisissez dans la liste.',
+  hof_title: 'Panthéon ({n}/6)', hof_follow: 'Utiliser l\'équipe de la section Dresseur', hof_own: 'Le Panthéon a sa propre équipe',
+  bd_title: 'Badges ({n}/8)', bd_none: 'Aucune icône choisie : l\'écran affiche {n} cases pleines (champ « Badges »).',
+  rg_kanto: 'Kanto', rg_johto: 'Johto', rg_hoenn: 'Hoenn', rg_sinnoh: 'Sinnoh', rg_unova: 'Unys', rg_kalos: 'Kalos', rg_galar: 'Galar', rg_paldea: 'Paldea', rg_other: 'Autres',
+  bd_clear: 'Vider', pg_team: 'Équipe', k_web: 'PokeAPI', k_own: 'les vôtres',
+  shiny: 'Chromatique', panel: 'Dalle', pn_bw: 'Noir/Blanc', pn_bwr: 'Noir/Blanc/Rouge', pn_bwry: 'Noir/Blanc/Rouge/Jaune',
+  dither: 'Ombrage du sprite', dt_blocks: 'Tramage dans chaque pixel', dt_threshold: 'Seuil uniquement',
+  contrast: 'Contraste (-50..50)', interval: 'Changement de page (min, 0 = bouton seulement)', dispLang: 'Langue de l\'écran',
+  deviceUrl: 'Adresse de l\'écran (seulement si vous ouvrez ce fichier depuis un PC, p. ex. http://dexframe.local)', connect: 'Connecter',
+  tr_catalog: 'De Pokémon Showdown : {n} (l\'écran ne télécharge que celui que vous choisissez)', tr_need_dev: 'connectez l\'écran : c\'est lui qui télécharge le sprite', tr_dl: 'Téléchargement de {n} sur l\'écran…', tr_dl_ok: '{n} prêt', tr_dl_err: 'Sprite non téléchargé : {e}', tr_other: 'Sans gén.', tr_count: '{n} Dresseurs',
+  g_hof: 'Panthéon', pg_hof: 'Panthéon', hofRegion: 'Région', hofDate: 'Date',
+  hofStrength: 'Intensité du fond (0-100)', hof_team: 'L\'équipe est celle de la section Dresseur : {t}',
+  hof_bg: 'Fond', hof_bg_up: 'Importer un fond…', hof_bg_clear: 'Retirer le fond',
+  hof_bg_none: 'Pas d\'image : fond d\'origine à rayons de lumière.', hof_bg_custom: 'Votre fond importé',
+  g_backup: 'Sauvegarde', bk_export: 'Exporter la configuration', bk_import: 'Importer la configuration…',
+  bk_info: 'Enregistre toute la configuration dans un fichier .json : Pokémon, capacités, rubans, Dresseur, équipe, Panthéon, langues et images importées. Les images de vos dossiers (rubans, Dresseurs) ne sont pas incluses : le fichier retient seulement lesquelles vous avez choisies.',
+  bk_done: 'Configuration exportée', bk_loaded: 'Configuration importée', bk_bad: 'Fichier non valide : {e}',
+  pg_cover: 'Portrait', pg_moves: 'Capacités', pg_stats: 'Statistiques', pg_story: 'Histoire', pg_ribbons: 'Rubans',
+  pk_search: 'Chercher un ruban ou un insigne (nom, description, gén.)…', pk_all: 'Tout', pk_ribbon: 'Rubans', pk_mark: 'Insignes',
+  pk_allgen: 'Toutes les gén.', pk_only: 'Sélectionnés seulement',
+  pk_count: '{n} résultats · {s} sélectionnés · cliquez pour ajouter/retirer', k_ribbon: 'Ruban', k_mark: 'Insigne',
+  hint: 'Images des rubans (✗ = introuvable ou bloquée par CORS, la rosette est utilisée) :', embedded: 'intégrées',
+  st_connected: 'Connecté : {w}×{h} {mode}, page {c}/{n}',
+  st_preview: 'Mode aperçu (aucun DexFrame joignable)', st_saved_browser: 'Enregistré dans ce navigateur seulement',
+  st_saved: 'Données enregistrées sur l\'écran', st_save_err: 'Erreur d\'enregistrement : {e}', st_no_device: 'Aucun écran connecté',
+  st_no_pages: 'Aucune page active', st_sending: 'Envoi de la page {i}/{n}…', st_page: 'page {i}',
+  st_rotation: 'rotation', st_sent: '{n} pages envoyées, rafraîchissement en cours', st_send_fail: 'Envoi échoué : {e}',
+  st_next: 'Page suivante en route', st_err: 'Erreur : {e}', st_autofill: 'Nom et types mis à jour',
+  st_pokeapi_err: 'PokeAPI injoignable : {e}', st_sprite: 'Sprite introuvable (le téléphone/PC a besoin d\'internet)',
+  item: 'Objet tenu', since: 'Ensemble depuis (jj/mm/aaaa ; vide = date de rencontre)',
+  pg_weak: 'Faiblesses', pg_daily: 'Pokémon du jour', dailyCount: 'Pokémon du jour : combien (1-14, un par jour à tour de rôle)',
+  daily_shuffle: 'Nouveau tirage', daily_info: 'Aujourd\'hui : n° {t} · cycle de {n} : {l}',
+  g_collection: 'Collection', colRotation: 'Mettre dans la rotation un portrait de chaque Pokémon de la collection',
+  col_save: 'Enregistrer le Pokémon de l\'éditeur dans la collection', col_load: 'Modifier', col_update: 'Écraser',
+  col_preview: 'Aperçu', col_empty: 'Collection vide : remplissez le Pokémon dans les sections ci-dessus et appuyez sur « Enregistrer… ».',
+  col_info: '{n} Pokémon dans la collection · {p} pages en rotation (+{d} du jour) · max {m} sur l\'écran',
+  st_sent_kb: '{kb} Ko',
+  col_loaded: '{n} chargé dans l\'éditeur', col_saved: '{n} enregistré dans la collection', col_upd: '{n} mis à jour',
+  col_confirm: 'Retirer {n} de la collection ?',
+  sd_title: 'Importer un set Showdown', sd_ph: 'Collez un set au format d\'export de Pokémon Showdown…', sd_go: 'Importer le set',
+  sd_info: 'Remplit nom, types, objet, talent, nature, capacités et statistiques (calculées à partir des EV/IV/niveau). Histoire et rubans ne changent pas.',
+  sd_busy: 'Import depuis PokeAPI…', sd_ok: 'Set importé : {n}', sd_err: 'Import échoué : {e}',
+  sleep: 'Économie d\'énergie (deep sleep, sur batterie)', awake: 'Minutes en ligne après un appui sur le bouton/la mise sous tension',
+  tz: 'Fuseau horaire (POSIX TZ, par défaut Italie)',
+  st_too_many: 'Trop de pages : {n}, l\'écran en contient {m}',
+  st_too_big: 'Les pages occupent {n} Ko, l\'écran a de la place pour {m} : retirez-en', st_rendering: 'Préparation de la page {i}/{n}…',
+  st_size: 'Cette version de l\'interface dessine des pages {w}×{h} : la dalle fait {pw}×{ph}', st_glyphs: 'Envoi des chiffres du compteur…',
+  st_bat: 'batterie {v} V', st_old_fw: 'ancien firmware : pas de compteur de jours (mettez à jour le firmware)',
+  pk_title: 'Importer depuis un fichier PKHeX (.pk4 – .pk9)', pk_pick: 'Choisir un fichier .pk…',
+  pk_info: 'Exportez le Pokémon depuis PKHeX (clic droit sur la case → Export/Save file) et chargez-le ici. Lit espèce, surnom, niveau, nature, talent, objet, capacités, statistiques, chromatique, DO, ID, date et lieu de rencontre, caractéristique et rubans. Le fichier reste dans le navigateur.',
+  pk_story: 'Mettre aussi à jour l\'histoire (DO, ID, données de rencontre, caractéristique)', pk_ribbons: 'Remplacer les rubans par ceux du fichier',
+  pk_ok: '{name} importé depuis {fmt} ({game}) · {ribbons} rubans', pk_unmatched: '{n} rubans sans image dans votre légende',
+  pk_err: 'Import échoué : {e}', pk_ext: 'extension non prise en charge (utilisez .pk4 … .pk9)', pk_bad: 'le fichier ne ressemble pas à un Pokémon valide',
+  pk_egg: 'c\'est un Œuf',
+  g_system: 'Système', sy_info: 'Firmware {v} · mémoire {u} / {t} Ko · Wi-Fi : {w}{k}', sy_key_on: ' · clé active',
+  sy_nodev: 'Connectez un écran pour le mettre à jour.', sy_key: 'Clé de l\'écran (si définie)',
+  sy_fw: 'Mettre à jour le firmware (.bin)…', sy_ui: 'Mettre à jour l\'interface web (dossier data/www)…', sy_setup: 'Wi-Fi et sécurité →', sy_reboot: 'Redémarrer',
+  sy_fw_info: 'Utilisez dexframe-<panel>-ota.bin (ou .pio/build/<env>/firmware.bin). Pages, données et Wi-Fi sont conservés.',
+  sy_ui_info: 'Choisissez le dossier data/www du projet : les fichiers sont copiés un par un, pages et données sont conservées (contrairement à uploadfs).',
+  sy_sending: 'Envoi de {f} ({i}/{n})…', sy_fw_ok: 'Firmware mis à jour, l\'écran redémarre', sy_ui_ok: 'Interface web mise à jour : {n} fichiers, rechargez la page',
+  sy_err: 'Erreur : {e}', sy_key_bad: 'clé absente ou incorrecte (Système → Clé)',
+  sy_wifi: 'Réseau Wi-Fi', sy_scan: 'Rechercher', sy_scanning: 'Recherche…', sy_ssid: 'Nom du réseau (SSID)', sy_pass: 'Mot de passe',
+  sy_wsave: 'Enregistrer et redémarrer', sy_wcur: 'Connecté à : {n}',
+  sy_wconfirm: 'L\'écran redémarre et essaie « {n} ». Avec un mauvais mot de passe, il rouvre le réseau DexFrame-Setup. Continuer ?',
+  sy_wsaved: 'Enregistré : l\'écran rejoint {n}. Sur un nouveau réseau son adresse change aussi (essayez dexframe.local)',
+  sy_reset_t: 'Réinitialisation d\'usine', sy_reset: 'Réinitialisation d\'usine…',
+  sy_reset_i: 'Efface réglages, Wi-Fi, clé, pages, données enregistrées et sprites téléchargés, puis redémarre en mode configuration. Seuls les fichiers de l\'interface web restent. Exportez d\'abord une sauvegarde.',
+  sy_reset_c1: 'Effacer TOUT sur l\'écran (réglages, Wi-Fi, pages, données) ? C\'est irréversible.',
+  sy_reset_c2: 'Tapez RESET pour confirmer', sy_reset_ok: 'Réinitialisé : rejoignez le réseau DexFrame-Setup pour le configurer à nouveau',
+  sy_old_fw: 'nécessite le firmware 1.4 : mettez-le d\'abord à jour (Mettre à jour le firmware)',
+  png: 'Télécharger en PNG', st_skipped: '{n} déjà sur l\'écran',
+  pg_info: 'Cochez les pages à afficher et ordonnez-les avec les flèches. Minutes : combien de temps cette page reste à l\'écran (vide = la durée générale).',
+  pg_min: 'Minutes pour cette page',
+  pg_countdown: 'Compte à rebours', pg_movedex: 'Détail des capacités', pg_radar: 'Graphique IV/EV', pg_evo: 'Évolutions', pg_dexinfo: 'Fiche Pokédex',
+  teamPer: 'Équipe et Panthéon : Pokémon par page', tp_6: '6 (une page)', tp_3: '3 (deux pages, sprites plus grands)', tp_2: '2 (trois pages, sprites en 2×)',
+  cdTitle: 'Compte à rebours : titre', cdDate: 'Compte à rebours : date (jj/mm/aaaa)',
+  ivs: 'IV (PV/Atq/Déf/Atq.Spé/Déf.Spé/Vit)', evs: 'EV (PV/Atq/Déf/Atq.Spé/Déf.Spé/Vit)',
+  pageStyle: 'Style des pages', ps_classic: 'Classique (en-tête noir)', ps_accent: 'En-tête dans la couleur d\'accent', ps_light: 'Clair (en-tête blanc)',
+  previewPanel: 'Aperçu des couleurs', pv_same: 'Comme l\'écran', pn_color6: '6 couleurs (aperçu seulement)',
+  quietOn: 'Plage nocturne : pas de changement de page automatique', quietFrom: 'De', quietTo: 'À',
+  flip: 'Écran à l\'envers (180°)',
+  btnDouble: 'Bouton : double clic', btnLong: 'Bouton : appui long (1 s)',
+  ba_0: 'Aucune action', ba_1: 'Page suivante', ba_2: 'Page précédente', ba_3: 'Rafraîchissement complet',
+  batLow: 'Seuil de batterie faible (V)', fullEvery: 'Rafraîchissement complet toutes les N mises à jour du compteur',
+};
+
+UI.de = {
+  lang: 'Sprache', send: 'Alle Seiten senden', next: 'Nächste Seite auf dem Display', save: 'Daten speichern',
+  autofill: 'Name/Typen von PokeAPI',
+  g_pokemon: 'Pokémon', g_moves: 'Attacken', g_stats: 'Statuswerte', g_story: 'Geschichte', g_ribbons: 'Bänder',
+  g_display: 'Display', g_pages: 'Seiten',
+  dex: 'Pokédex-Nr.', name: 'Name', level: 'Level', gender: 'Geschlecht', type1: 'Typ 1', type2: 'Typ 2',
+  nature: 'Wesen', ability: 'Fähigkeit', language: 'Spielsprache', move: 'Attacke {n}', mtype: 'Typ',
+  ps: 'KP', att: 'Angriff', dif: 'Verteidigung', atsp: 'Sp.-Angr.', dfsp: 'Sp.-Vert.', vel: 'Initiative',
+  ot: 'OT', tid: 'ID', met: 'Getroffen am', region: 'Region', metPlace: 'Fundort',
+  deposited: 'Abgelegt am', characteristic: 'Charakteristik',
+  ribbons: 'Eines pro Zeile: "datei.png" oder "Name | datei.png"', ribbonBase: 'Basis-URL der Bilder (optional, z. B. https://…/ordner/)',
+  adv: 'Erweitert: Text von Hand, Bild-URL, Dateiprüfung', sel_title: 'Ausgewählt ({n}) — in der Reihenfolge des Displays',
+  sel_empty: 'Kein Band ausgewählt: im Raster unten wählen.', sel_rename: 'Automatischer Name: {n}',
+  up: 'Nach oben', down: 'Nach unten', remove: 'Entfernen',
+  g_trainer: 'Trainer', trName: 'Trainername', trId: 'Trainer-ID', trGame: 'Spiel', trStart: 'Abenteuer begonnen am',
+  trTime: 'Spielzeit', trDex: 'Pokédex (gefangen)', trBadges: 'Orden (Anzahl, wenn keine Symbole gewählt sind)', team: 'Team (Pokédex-Nummern, oder aus der Liste unten wählen)',
+  tr_sprite: 'Trainer-Sprite', tr_upload: 'Bild hochladen…', tr_clear: 'Bild entfernen',
+  tr_none: 'Kein Bild: das Display zeigt eine allgemeine Silhouette.', tr_custom: 'Dein hochgeladenes Bild ({w}×{h})',
+  tr_legend: 'Aus deinem Ordner trainers/: {n}', tr_search: 'Trainer suchen…', tr_allgen: 'Alle Gen.',
+  tr_bad: 'Bild nicht lesbar', pg_trainer: 'Trainer',
+  trBase: 'Basis-URL der Trainer-Sprites (optional)', trFile: 'Sprite-Datei (z. B. name.png)',
+  tr_url: 'Von URL: {u}', tr_url_bad: 'Bild von der URL nicht nutzbar (nicht gefunden, oder die Seite erlaubt das Laden von anderen Seiten nicht): lade es herunter und nutze „Bild hochladen…“.',
+  style: 'Sprite', sp_rb: 'Rot/Blau', sp_yellow: 'Gelb', sp_gold: 'Gold', sp_silver: 'Silber', sp_crystal: 'Kristall',
+  sp_rs: 'Rubin/Saphir', sp_emerald: 'Smaragd', sp_frlg: 'Feuerrot/Blattgrün', sp_dp: 'Diamant/Perl',
+  sp_pt: 'Platin', sp_hgss: 'HeartGold/SoulSilver', sp_bw: 'Schwarz/Weiß',
+  st_title: 'Sprite-Stil (zum Wählen klicken)', st_max: 'bis Nr. {n}: darüber wird der Standard-Sprite verwendet',
+  mon_pick: 'Pokémon aus der Liste wählen', mon_search: 'Nach Name oder Nummer suchen…', mon_allgen: 'Alle Gen.',
+  mon_count: '{n} Pokémon · zum Wählen klicken', mon_count_multi: '{n} Pokémon · klicken zum Hinzufügen/Entfernen (max. {m})',
+  team_title: 'Team ({n}/6) — in der Reihenfolge des Displays', team_empty: 'Kein Pokémon: aus der Liste wählen.',
+  hof_title: 'Ruhmeshalle ({n}/6)', hof_follow: 'Team aus dem Bereich Trainer verwenden', hof_own: 'Die Ruhmeshalle hat ein eigenes Team',
+  bd_title: 'Orden ({n}/8)', bd_none: 'Keine Symbole gewählt: das Display zeigt {n} gefüllte Felder (Feld „Orden“).',
+  rg_kanto: 'Kanto', rg_johto: 'Johto', rg_hoenn: 'Hoenn', rg_sinnoh: 'Sinnoh', rg_unova: 'Einall', rg_kalos: 'Kalos', rg_galar: 'Galar', rg_paldea: 'Paldea', rg_other: 'Andere',
+  bd_clear: 'Leeren', pg_team: 'Team', k_web: 'PokeAPI', k_own: 'eigene',
+  shiny: 'Schillernd', panel: 'Panel', pn_bw: 'Schwarz/Weiß', pn_bwr: 'Schwarz/Weiß/Rot', pn_bwry: 'Schwarz/Weiß/Rot/Gelb',
+  dither: 'Sprite-Schattierung', dt_blocks: 'Raster in jedem Pixel', dt_threshold: 'Nur Schwellenwert',
+  contrast: 'Kontrast (-50..50)', interval: 'Seitenwechsel (Min., 0 = nur Taste)', dispLang: 'Sprache des Displays',
+  deviceUrl: 'Adresse des Displays (nur wenn diese Datei von einem PC geöffnet wird, z. B. http://dexframe.local)', connect: 'Verbinden',
+  tr_catalog: 'Von Pokémon Showdown: {n} (das Display lädt nur den gewählten herunter)', tr_need_dev: 'Display verbinden: es lädt den Sprite herunter', tr_dl: '{n} wird auf das Display geladen…', tr_dl_ok: '{n} bereit', tr_dl_err: 'Sprite nicht geladen: {e}', tr_other: 'Ohne Gen.', tr_count: '{n} Trainer',
+  g_hof: 'Ruhmeshalle', pg_hof: 'Ruhmeshalle', hofRegion: 'Region', hofDate: 'Datum',
+  hofStrength: 'Stärke des Hintergrunds (0-100)', hof_team: 'Das Team ist das aus dem Bereich Trainer: {t}',
+  hof_bg: 'Hintergrund', hof_bg_up: 'Hintergrund hochladen…', hof_bg_clear: 'Hintergrund entfernen',
+  hof_bg_none: 'Kein Bild: ursprünglicher Hintergrund mit Lichtstrahlen.', hof_bg_custom: 'Dein hochgeladener Hintergrund',
+  g_backup: 'Sicherung', bk_export: 'Konfiguration exportieren', bk_import: 'Konfiguration importieren…',
+  bk_info: 'Speichert die gesamte Konfiguration in einer .json-Datei: Pokémon, Attacken, Bänder, Trainer, Team, Ruhmeshalle, Sprachen und hochgeladene Bilder. Bilder aus deinen Ordnern (Bänder, Trainer) sind nicht enthalten: die Datei merkt sich nur, welche du gewählt hast.',
+  bk_done: 'Konfiguration exportiert', bk_loaded: 'Konfiguration importiert', bk_bad: 'Ungültige Datei: {e}',
+  pg_cover: 'Porträt', pg_moves: 'Attacken', pg_stats: 'Statuswerte', pg_story: 'Geschichte', pg_ribbons: 'Bänder',
+  pk_search: 'Band oder Zeichen suchen (Name, Beschreibung, Gen.)…', pk_all: 'Alle', pk_ribbon: 'Bänder', pk_mark: 'Zeichen',
+  pk_allgen: 'Alle Gen.', pk_only: 'Nur ausgewählte',
+  pk_count: '{n} Treffer · {s} ausgewählt · klicken zum Hinzufügen/Entfernen', k_ribbon: 'Band', k_mark: 'Zeichen',
+  hint: 'Band-Bilder (✗ = nicht gefunden oder durch CORS blockiert, die Rosette wird verwendet):', embedded: 'eingebettet',
+  st_connected: 'Verbunden: {w}×{h} {mode}, Seite {c}/{n}',
+  st_preview: 'Vorschaumodus (kein DexFrame erreichbar)', st_saved_browser: 'Nur in diesem Browser gespeichert',
+  st_saved: 'Daten auf dem Display gespeichert', st_save_err: 'Fehler beim Speichern: {e}', st_no_device: 'Kein Display verbunden',
+  st_no_pages: 'Keine aktiven Seiten', st_sending: 'Seite {i}/{n} wird gesendet…', st_page: 'Seite {i}',
+  st_rotation: 'Rotation', st_sent: '{n} Seiten gesendet, Display wird aktualisiert', st_send_fail: 'Senden fehlgeschlagen: {e}',
+  st_next: 'Nächste Seite unterwegs', st_err: 'Fehler: {e}', st_autofill: 'Name und Typen aktualisiert',
+  st_pokeapi_err: 'PokeAPI nicht erreichbar: {e}', st_sprite: 'Sprite nicht gefunden (Handy/PC braucht Internet)',
+  item: 'Getragenes Item', since: 'Zusammen seit (TT/MM/JJJJ; leer = Datum des Treffens)',
+  pg_weak: 'Schwächen', pg_daily: 'Pokémon des Tages', dailyCount: 'Pokémon des Tages: wie viele (1-14, jeden Tag eines der Reihe nach)',
+  daily_shuffle: 'Neu auslosen', daily_info: 'Heute: Nr. {t} · Zyklus von {n}: {l}',
+  g_collection: 'Sammlung', colRotation: 'Ein Porträt jedes Pokémon der Sammlung in die Rotation aufnehmen',
+  col_save: 'Pokémon aus dem Editor in der Sammlung speichern', col_load: 'Bearbeiten', col_update: 'Überschreiben',
+  col_preview: 'Vorschau', col_empty: 'Sammlung leer: das Pokémon in den Bereichen oben ausfüllen und „Speichern…“ drücken.',
+  col_info: '{n} Pokémon in der Sammlung · {p} Seiten in der Rotation (+{d} des Tages) · max. {m} auf dem Display',
+  st_sent_kb: '{kb} KB',
+  col_loaded: '{n} in den Editor geladen', col_saved: '{n} in der Sammlung gespeichert', col_upd: '{n} aktualisiert',
+  col_confirm: '{n} aus der Sammlung entfernen?',
+  sd_title: 'Showdown-Set importieren', sd_ph: 'Ein Set im Exportformat von Pokémon Showdown einfügen…', sd_go: 'Set importieren',
+  sd_info: 'Füllt Name, Typen, Item, Fähigkeit, Wesen, Attacken und Statuswerte aus (berechnet aus EV/DV/Level). Geschichte und Bänder bleiben unverändert.',
+  sd_busy: 'Import von PokeAPI…', sd_ok: 'Set importiert: {n}', sd_err: 'Import fehlgeschlagen: {e}',
+  sleep: 'Energiesparen (Deep Sleep, für Akkubetrieb)', awake: 'Minuten online nach Tastendruck/Einschalten',
+  tz: 'Zeitzone (POSIX TZ, Standard Italien)',
+  st_too_many: 'Zu viele Seiten: {n}, das Display fasst {m}',
+  st_too_big: 'Die Seiten belegen {n} KB, auf dem Display ist Platz für {m}: entferne einige', st_rendering: 'Seite {i}/{n} wird vorbereitet…',
+  st_size: 'Diese Version der Oberfläche zeichnet Seiten mit {w}×{h}: das Panel hat {pw}×{ph}', st_glyphs: 'Ziffern des Zählers werden gesendet…',
+  st_bat: 'Akku {v} V', st_old_fw: 'alte Firmware: kein Tageszähler (Firmware aktualisieren)',
+  pk_title: 'Aus einer PKHeX-Datei importieren (.pk4 – .pk9)', pk_pick: '.pk-Datei wählen…',
+  pk_info: 'Exportiere das Pokémon aus PKHeX (Rechtsklick auf den Platz → Export/Save file) und lade es hier. Liest Art, Spitzname, Level, Wesen, Fähigkeit, Item, Attacken, Statuswerte, Schillernd, OT, ID, Datum und Ort des Treffens, Charakteristik und Bänder. Die Datei bleibt im Browser.',
+  pk_story: 'Auch die Geschichte aktualisieren (OT, ID, Daten des Treffens, Charakteristik)', pk_ribbons: 'Bänder durch die aus der Datei ersetzen',
+  pk_ok: '{name} aus {fmt} ({game}) importiert · {ribbons} Bänder', pk_unmatched: '{n} Bänder ohne Bild in deiner Legende',
+  pk_err: 'Import fehlgeschlagen: {e}', pk_ext: 'Dateiendung nicht unterstützt (nutze .pk4 … .pk9)', pk_bad: 'die Datei sieht nicht nach einem gültigen Pokémon aus',
+  pk_egg: 'es ist ein Ei',
+  g_system: 'System', sy_info: 'Firmware {v} · Speicher {u} / {t} KB · WLAN: {w}{k}', sy_key_on: ' · Schlüssel aktiv',
+  sy_nodev: 'Verbinde ein Display, um es zu aktualisieren.', sy_key: 'Schlüssel des Displays (falls gesetzt)',
+  sy_fw: 'Firmware aktualisieren (.bin)…', sy_ui: 'Web-Oberfläche aktualisieren (Ordner data/www)…', sy_setup: 'WLAN und Sicherheit →', sy_reboot: 'Neu starten',
+  sy_fw_info: 'Nutze dexframe-<panel>-ota.bin (oder .pio/build/<env>/firmware.bin). Seiten, Daten und WLAN bleiben erhalten.',
+  sy_ui_info: 'Wähle den Ordner data/www des Projekts: die Dateien werden einzeln kopiert, Seiten und Daten bleiben erhalten (anders als bei uploadfs).',
+  sy_sending: '{f} wird gesendet ({i}/{n})…', sy_fw_ok: 'Firmware aktualisiert, das Display startet neu', sy_ui_ok: 'Web-Oberfläche aktualisiert: {n} Dateien, Seite neu laden',
+  sy_err: 'Fehler: {e}', sy_key_bad: 'Schlüssel fehlt oder ist falsch (System → Schlüssel)',
+  sy_wifi: 'WLAN', sy_scan: 'Suchen', sy_scanning: 'Suche…', sy_ssid: 'Netzwerkname (SSID)', sy_pass: 'Passwort',
+  sy_wsave: 'Speichern und neu starten', sy_wcur: 'Verbunden mit: {n}',
+  sy_wconfirm: 'Das Display startet neu und versucht „{n}“. Bei falschem Passwort öffnet es wieder das Netzwerk DexFrame-Setup. Fortfahren?',
+  sy_wsaved: 'Gespeichert: das Display verbindet sich mit {n}. In einem neuen Netzwerk ändert sich auch seine Adresse (probiere dexframe.local)',
+  sy_reset_t: 'Werkseinstellungen', sy_reset: 'Auf Werkseinstellungen zurücksetzen…',
+  sy_reset_i: 'Löscht Einstellungen, WLAN, Schlüssel, Seiten, gespeicherte Daten und heruntergeladene Sprites und startet im Einrichtungsmodus neu. Nur die Dateien der Web-Oberfläche bleiben. Exportiere vorher eine Sicherung.',
+  sy_reset_c1: 'ALLES auf dem Display löschen (Einstellungen, WLAN, Seiten, Daten)? Das lässt sich nicht rückgängig machen.',
+  sy_reset_c2: 'Zum Bestätigen RESET eingeben', sy_reset_ok: 'Zurückgesetzt: verbinde dich mit dem Netzwerk DexFrame-Setup, um es neu einzurichten',
+  sy_old_fw: 'braucht Firmware 1.4: zuerst aktualisieren (Firmware aktualisieren)',
+  png: 'PNG herunterladen', st_skipped: '{n} schon auf dem Display',
+  pg_info: 'Hake die Seiten an, die gezeigt werden sollen, und ordne sie mit den Pfeilen. Minuten: wie lange diese Seite auf dem Bildschirm bleibt (leer = die allgemeine Zeit).',
+  pg_min: 'Minuten für diese Seite',
+  pg_countdown: 'Countdown', pg_movedex: 'Attacken-Details', pg_radar: 'DV/EV-Diagramm', pg_evo: 'Entwicklungen', pg_dexinfo: 'Pokédex-Eintrag',
+  teamPer: 'Team und Ruhmeshalle: Pokémon pro Seite', tp_6: '6 (eine Seite)', tp_3: '3 (zwei Seiten, größere Sprites)', tp_2: '2 (drei Seiten, Sprites in 2×)',
+  cdTitle: 'Countdown: Titel', cdDate: 'Countdown: Datum (TT/MM/JJJJ)',
+  ivs: 'DV (KP/Ang/Vert/Sp.-Ang/Sp.-Vert/Init)', evs: 'EV (KP/Ang/Vert/Sp.-Ang/Sp.-Vert/Init)',
+  pageStyle: 'Seitenstil', ps_classic: 'Klassisch (schwarze Kopfzeile)', ps_accent: 'Kopfzeile in der Akzentfarbe', ps_light: 'Hell (weiße Kopfzeile)',
+  previewPanel: 'Farbvorschau', pv_same: 'Wie das Display', pn_color6: '6 Farben (nur Vorschau)',
+  quietOn: 'Nachtruhe: kein automatischer Seitenwechsel', quietFrom: 'Von', quietTo: 'Bis',
+  flip: 'Bildschirm auf dem Kopf (180°)',
+  btnDouble: 'Taste: Doppelklick', btnLong: 'Taste: langer Druck (1 s)',
+  ba_0: 'Keine Aktion', ba_1: 'Nächste Seite', ba_2: 'Vorherige Seite', ba_3: 'Vollständige Aktualisierung',
+  batLow: 'Schwelle für schwachen Akku (V)', fullEvery: 'Vollständige Aktualisierung alle N Zähler-Updates',
+};
+
+DISP.es = {
+  cover: 'Retrato', moves: 'Movimientos', stats: 'Características', story: 'Historia', ribbons: 'Cintas',
+  level: 'Nivel', type: 'Tipo', nature: 'Naturaleza', ability: 'Habilidad', language: 'Idioma',
+  ot: 'Entrenador original', tid: 'ID', met: 'Encontrado el', region: 'Región', metPlace: 'Lugar del encuentro',
+  deposited: 'Depositado el', characteristic: 'Característica', total: 'Total', count: '{n} cintas',
+  ps: 'PS', att: 'ATQ', dif: 'DEF', atsp: 'AT.ESP', dfsp: 'DEF.ESP', vel: 'VEL',
+  trainer: 'Entrenador', trId: 'ID', game: 'Juego', started: 'Aventura desde', time: 'Tiempo de juego',
+  dex: 'Pokédex', badges: 'Medallas', team: 'Equipo', hof: 'Salón de la Fama',
+  lv: 'Nv.', item: 'Objeto', days: 'Días juntos', weak: 'Debilidades', daily: 'Del día',
+  w_none: 'Sin debilidades', flavor_none: 'Sin descripción',
+  countdown: 'Cuenta atrás', days_left: 'Días restantes', cd_date: 'Fecha',
+  movedex: 'Detalle de movimientos', pow: 'Pot.', acc: 'Prec.', pp: 'PP',
+  cat_physical: 'Físico', cat_special: 'Especial', cat_status: 'Estado',
+  radar: 'IV / EV', evo: 'Evoluciones', evo_trade: 'Intercambio', evo_friend: 'Amistad',
+  dexinfo: 'Pokédex', height: 'Altura', weight: 'Peso', egg: 'Grupo Huevo',
+};
+DISP.fr = {
+  cover: 'Portrait', moves: 'Capacités', stats: 'Statistiques', story: 'Histoire', ribbons: 'Rubans',
+  level: 'Niveau', type: 'Type', nature: 'Nature', ability: 'Talent', language: 'Langue',
+  ot: 'Dresseur d\'origine', tid: 'ID', met: 'Rencontré le', region: 'Région', metPlace: 'Lieu de rencontre',
+  deposited: 'Déposé le', characteristic: 'Caractéristique', total: 'Total', count: '{n} rubans',
+  ps: 'PV', att: 'ATQ', dif: 'DÉF', atsp: 'ATQ.SPÉ', dfsp: 'DÉF.SPÉ', vel: 'VIT',
+  trainer: 'Dresseur', trId: 'ID', game: 'Jeu', started: 'Aventure depuis', time: 'Temps de jeu',
+  dex: 'Pokédex', badges: 'Badges', team: 'Équipe', hof: 'Panthéon',
+  lv: 'N.', item: 'Objet tenu', days: 'Jours ensemble', weak: 'Faiblesses', daily: 'Du jour',
+  w_none: 'Aucune faiblesse', flavor_none: 'Pas de description',
+  countdown: 'Compte à rebours', days_left: 'Jours restants', cd_date: 'Date',
+  movedex: 'Détail des capacités', pow: 'Puis.', acc: 'Préc.', pp: 'PP',
+  cat_physical: 'Physique', cat_special: 'Spécial', cat_status: 'Statut',
+  radar: 'IV / EV', evo: 'Évolutions', evo_trade: 'Échange', evo_friend: 'Bonheur',
+  dexinfo: 'Pokédex', height: 'Taille', weight: 'Poids', egg: 'Groupe d\'Œuf',
+};
+DISP.de = {
+  cover: 'Porträt', moves: 'Attacken', stats: 'Statuswerte', story: 'Geschichte', ribbons: 'Bänder',
+  level: 'Level', type: 'Typ', nature: 'Wesen', ability: 'Fähigkeit', language: 'Sprache',
+  ot: 'Originaltrainer', tid: 'ID', met: 'Getroffen am', region: 'Region', metPlace: 'Fundort',
+  deposited: 'Abgelegt am', characteristic: 'Charakteristik', total: 'Gesamt', count: '{n} Bänder',
+  ps: 'KP', att: 'ANG', dif: 'VERT', atsp: 'SP.ANG', dfsp: 'SP.VERT', vel: 'INIT',
+  trainer: 'Trainer', trId: 'ID', game: 'Spiel', started: 'Abenteuer seit', time: 'Spielzeit',
+  dex: 'Pokédex', badges: 'Orden', team: 'Team', hof: 'Ruhmeshalle',
+  lv: 'Lv.', item: 'Item', days: 'Tage zusammen', weak: 'Schwächen', daily: 'Des Tages',
+  w_none: 'Keine Schwächen', flavor_none: 'Keine Beschreibung',
+  countdown: 'Countdown', days_left: 'Tage bis dahin', cd_date: 'Datum',
+  movedex: 'Attacken-Details', pow: 'Stärke', acc: 'Gen.', pp: 'AP',
+  cat_physical: 'Physisch', cat_special: 'Spezial', cat_status: 'Status',
+  radar: 'DV / EV', evo: 'Entwicklungen', evo_trade: 'Tausch', evo_friend: 'Freundschaft',
+  dexinfo: 'Pokédex', height: 'Größe', weight: 'Gewicht', egg: 'Ei-Gruppe',
+};
+
+Object.assign(TYPE_NAMES, {
+  es: {normal:'Normal',fire:'Fuego',water:'Agua',electric:'Eléctrico',grass:'Planta',ice:'Hielo',
+    fighting:'Lucha',poison:'Veneno',ground:'Tierra',flying:'Volador',psychic:'Psíquico',bug:'Bicho',
+    rock:'Roca',ghost:'Fantasma',dragon:'Dragón',dark:'Siniestro',steel:'Acero',fairy:'Hada'},
+  fr: {normal:'Normal',fire:'Feu',water:'Eau',electric:'Électrik',grass:'Plante',ice:'Glace',
+    fighting:'Combat',poison:'Poison',ground:'Sol',flying:'Vol',psychic:'Psy',bug:'Insecte',
+    rock:'Roche',ghost:'Spectre',dragon:'Dragon',dark:'Ténèbres',steel:'Acier',fairy:'Fée'},
+  de: {normal:'Normal',fire:'Feuer',water:'Wasser',electric:'Elektro',grass:'Pflanze',ice:'Eis',
+    fighting:'Kampf',poison:'Gift',ground:'Boden',flying:'Flug',psychic:'Psycho',bug:'Käfer',
+    rock:'Gestein',ghost:'Geist',dragon:'Drache',dark:'Unlicht',steel:'Stahl',fairy:'Fee'},
+});
 // ---------- form ----------
 function buildForm() {
   const form = $('form');
@@ -501,6 +980,8 @@ function buildForm() {
       if (type === 'textarea') lab.classList.add('wide');
       el.name = key;
       if (key === 'panel' && deviceInfo) el.disabled = true;  // detected from firmware
+      if (key === 'panel') [...el.options].forEach(o => { if (PANELS[o.value]?.previewOnly) o.remove(); });
+      if (key === 'batLow') { el.step = '0.05'; el.min = '3'; el.max = '4.2'; }
       if (key === 'deviceUrl') el.addEventListener('change', async () => {
         try { localStorage.setItem('dexframe', JSON.stringify(state)); } catch {}   // detectDevice re-reads it
         await detectDevice(); migrate(state);
@@ -508,8 +989,8 @@ function buildForm() {
         try { localStorage.setItem('dexframe', JSON.stringify(state)); } catch {}
       });
       el.addEventListener('input', () => {
-        state[key] = type === 'checkbox' ? el.checked : type === 'number' ? Number(el.value) : el.value;
-        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'style'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
+        state[key] = type === 'checkbox' ? el.checked : type === 'number' || ['teamPer', 'btnDouble', 'btnLong'].includes(key) ? Number(el.value) : el.value;
+        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'style', 'teamPer', 'team', 'hofTeam'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
         if (key === 'dispLang' || key === 'ribbons') renderPicker();   // names follow the display language
         if (key === 'trBase' || key === 'trFile') renderTrainerPicker();
         if (key === 'team' || key === 'dex' || key === 'style' || key === 'shiny' || key === 'dispLang') renderMonPickers();
@@ -652,6 +1133,10 @@ function blitFit(ink, sp, ax, ay, aw, ah, opt) {
     if (opt.under && (ink[py * W + px] || isProtected(px, py))) continue;
     const red = opt.hasRed && r > 140 && r > g * 1.5 && r > b * 1.5;
     const L = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (opt.palette && !opt.icon) {   // colour panels: line art black, the rest dithered between the nearest inks
+      ink[py * W + px] = L <= LINE_L ? 1 : paletteInk(r, g, b, opt, (BAYER[4][py & 3][px & 3] + 0.5) / 16);
+      continue;
+    }
     let dark = Math.min(1, Math.max(0, (255 - L) / 255 + opt.contrast / 100));
     if (!opt.icon) {
       // scaled sprites (team, Hall of Fame): the sprite's own line art (its darkest
@@ -672,6 +1157,20 @@ function blitFit(ink, sp, ax, ay, aw, ah, opt) {
     ink[py * W + px] = red && opt.faint == null ? 2 : dark > (BAYER[4][py & 3][px & 3] + 0.5) / 16 ? 1 : 0;
   }
 }
+// Ordered dither against the panel's inks: the threshold t (0..1) of the pixel's
+// place in the pattern nudges the colour before the nearest ink is taken.
+function paletteInk(r, g, b, opt, t) {
+  const k = (t - 0.5) * 120 - opt.contrast * 1.5;
+  r += k; g += k; b += k;
+  let best = 0, bd = Infinity;
+  for (const c of opt.palette) {
+    const [pr, pg, pb] = INKS[c].rgb;
+    const dist = 2 * (r - pr) ** 2 + 4 * (g - pg) ** 2 + 3 * (b - pb) ** 2;
+    if (dist < bd) { bd = dist; best = c; }
+  }
+  return best;
+}
+
 function blitSprite(ink, sp, ax, ay, aw, ah, opt) {
   if (opt.fit) return blitFit(ink, sp, ax, ay, aw, ah, opt);
   const scale = opt.scale || Math.max(1, Math.min(4, Math.floor(Math.min(aw / sp.w, ah / sp.h))));
@@ -712,6 +1211,10 @@ function blitSprite(ink, sp, ax, ay, aw, ah, opt) {
       if (px < 0 || py < 0 || px >= W || py >= H) continue;
       if (opt.under && (ink[py * W + px] || isProtected(px, py))) continue;   // keep text/plates on top
       let v;
+      if (opt.palette && opt.faint == null && !opt.crisp) {   // colour panels: dither between the nearest inks
+        ink[py * W + px] = paletteInk(r, g, b, opt, m ? (m[sy][sx] + 0.5) / n : (BAYER[4][py & 3][px & 3] + 0.5) / 16);
+        continue;
+      }
       if (red && opt.faint == null) v = 2;
       else if (opt.crisp) v = dark === 0.5 ? (px + py) & 1 : dark;
       else if (m) v = dark > (m[sy][sx] + 0.5) / n ? 1 : 0;
@@ -1014,10 +1517,13 @@ function raysBackdrop(ink, y0, strength, protect) {
 // Shared chrome: black header with name + page title, page dots at the bottom.
 function chrome(ctx, s, title, idx, total, name = s.name, gender = s.gender) {
   ctx.fillStyle = WHITE; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = BLACK; ctx.fillRect(0, 0, W, 30);
-  const titleW = title ? text(ctx, up(title), W - 10, 11, 8, true, WHITE, 'right') : 0;
-  const nw = text(ctx, up(name), 10, 7, 16, true, WHITE, 'left', W - titleW - 50);
-  if (gender && gender !== '-') drawGender(ctx, 10 + nw + 8, 8, gender, WHITE);
+  // page style: classic = black bar, accent = bar in the accent ink, light = white bar with a rule
+  const light = s.pageStyle === 'light', fg = light ? BLACK : WHITE;
+  ctx.fillStyle = light ? BLACK : s.pageStyle === 'accent' ? accent(s) : BLACK;
+  if (light) ctx.fillRect(0, 28, W, 2); else ctx.fillRect(0, 0, W, 30);
+  const titleW = title ? text(ctx, up(title), W - 10, 11, 8, true, fg, 'right') : 0;
+  const nw = text(ctx, up(name), 10, 7, 16, true, fg, 'left', W - titleW - 50);
+  if (gender && gender !== '-') drawGender(ctx, 10 + nw + 8, 8, gender, fg);
   const dotsX = W / 2 - (total * 12 - 4) / 2;
   for (let i = 0; i < total; i++) box(ctx, dotsX + i * 12, 288, 8, 8, i === idx);
 }
@@ -1057,7 +1563,7 @@ function parseDay(str) {
 }
 const todayDay = () => { const n = new Date(); return Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000); };
 const sinceDay = s => parseDay(s.since) ?? parseDay(s.met);
-const NUM_SEP = {it: '.', en: ','};
+const NUM_SEP = {it: '.', en: ',', es: '.', fr: ' ', de: '.'};
 const numSep = () => NUM_SEP[state.dispLang] || ',';
 const fmtNum = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, numSep());
 
@@ -1156,14 +1662,19 @@ function pickFlavor(sp, style, lang) {
 const CARD_GROUPS = ['pokemon', 'moves', 'stats', 'story', 'ribbons'];
 const CARD_KEYS = [...GROUPS.filter(([g]) => CARD_GROUPS.includes(g)).flatMap(([, f]) => f.map(x => x[0])), 'shiny'];
 const cardData = (s = state) => Object.fromEntries(CARD_KEYS.map(k => [k, s[k]]));
-const sameCard = (a, b) => CARD_KEYS.every(k => String(a[k] ?? '') === String(b[k] ?? ''));
+// a field one side never had (cards saved before it existed) does not make them differ
+const sameCard = (a, b) => CARD_KEYS.every(k => a[k] == null || b[k] == null || String(a[k]) === String(b[k]));
+// A page can span several screens (team split in parts): one rotation entry per part.
+const pageParts = (key, s = state) => Math.max(1, PAGES[key]?.parts ? PAGES[key].parts(s) : 1);
 function rotation() {
-  const entries = activePages().filter(k => k !== 'daily').map(key => ({key, s: state}));
+  const entries = activePages().filter(k => k !== 'daily')
+    .flatMap(key => Array.from({length: pageParts(key)}, (_, part) => ({key, s: state, part})));
   if (state.colRotation) for (const card of state.collection || [])
     if (!sameCard(card.data, state)) entries.push({key: 'cover', s: {...state, ...card.data}, card});
   return entries;
 }
 const totalEntries = () => rotation().length + (state.pg_daily ? 1 : 0);
+const rotationIndex = (key, part = 0) => key === 'daily' ? totalEntries() - 1 : rotation().findIndex(e => e.key === key && e.s === state && (e.part || 0) === part);
 
 // ---------- pages (400x300) ----------
 const PAGES = {
@@ -1175,7 +1686,7 @@ const PAGES = {
       // right column
       const x = 226, w = 164;
       text(ctx, up(d('type')), x, 40, 8, true, BLACK);
-      if (s.type1) { box(ctx, x, 52, w, 24, true, acc); text(ctx, up(typeName(s.type1)), x + w / 2, 57, 16, true, WHITE, 'center', w - 8); }
+      if (s.type1) { const c1 = typeFill(s.type1, s, acc); box(ctx, x, 52, w, 24, true, c1); text(ctx, up(typeName(s.type1)), x + w / 2, 57, 16, true, textOn(c1), 'center', w - 8); }
       if (s.type2) { box(ctx, x, 80, w, 24, false); text(ctx, up(typeName(s.type2)), x + w / 2, 85, 16, true, BLACK, 'center', w - 8); }
       // up to 4 rows of 36px from y=112: nature, ability, item (if any), days together (or language)
       const start = sinceDay(s), days = start != null ? todayDay() - start : null;
@@ -1199,7 +1710,7 @@ const PAGES = {
       for (let i = 0; i < 4; i++) {
         const y = 40 + i * 61;
         box(ctx, 10, y, 380, 53, false);
-        ctx.fillStyle = acc; ctx.fillRect(10, y, 12, 53);
+        ctx.fillStyle = typeFill(s['mtype' + i], s, acc); ctx.fillRect(10, y, 12, 53);
         text(ctx, up(s['move' + i] || '—'), 34, y + 10, 16, true, BLACK, 'left', 344);
         text(ctx, up(typeName(s['mtype' + i])), 34, y + 34, 8, true, BLACK);
         text(ctx, String(i + 1), 380, y + 10, 16, false, BLACK, 'right');
@@ -1281,8 +1792,9 @@ const PAGES = {
       text(ctx, `#${String(a.id).padStart(4, '0')}`, x, 40, 16, true, BLACK);
       wrapLines(up(a.genus), 8, true, w).slice(0, 2).forEach((l, i) => text(ctx, l, x, 64 + i * 11, 8, true, BLACK));
       a.types.forEach((k, i) => {
-        box(ctx, x, 92 + i * 28, w, 24, i === 0, i === 0 ? acc : BLACK);
-        text(ctx, up(typeName(k)), x + w / 2, 97 + i * 28, 16, true, i === 0 ? WHITE : BLACK, 'center', w - 8);
+        const c = i === 0 ? typeFill(k, s, acc) : BLACK;
+        box(ctx, x, 92 + i * 28, w, 24, i === 0, c);
+        text(ctx, up(typeName(k)), x + w / 2, 97 + i * 28, 16, true, i === 0 ? textOn(c) : BLACK, 'center', w - 8);
       });
       // flavor text: 16px if it fits in 4 lines, else 8px
       const fl = up(a.flavor || d('flavor_none'));
@@ -1421,7 +1933,9 @@ const PAGES = {
       }));
       return {mons, blits: []};
     },
+    parts: s => teamPer(s) < 6 ? Math.ceil(teamIds(s).length / teamPer(s)) : 1,
     draw(ctx, s, acc, a) {
+      if (teamPer(s) < 6) return drawTeamRow(ctx, s, acc, a);
       for (let i = 0; i < 6; i++) {
         const x = 8 + (i % 3) * 128, y = 36 + Math.floor(i / 3) * 124, m = a.mons[i];
         if (!m) { box(ctx, x + 50, y + 34, 24, 24, false); continue; }   // empty slot
@@ -1437,8 +1951,9 @@ const PAGES = {
   },
   hof: {
     header: s => [s.hofRegion || '—', '-'],
+    parts: s => teamPer(s) < 6 ? Math.ceil(hofIds(s).length / teamPer(s)) : 1,
     async prepare(s) {
-      const ids = hofIds(s);
+      const per = teamPer(s), ids = per < 6 ? hofIds(s).slice((s._part || 0) * per, (s._part || 0) * per + per) : hofIds(s);
       const [sprites, names, bg] = await Promise.all([
         Promise.all(ids.map(id => getSprite(spriteUrl(s.style, id, false)).catch(() => null))),
         Promise.all(ids.map(id => monName(id, s.dispLang))),
@@ -1450,13 +1965,16 @@ const PAGES = {
       const n = assets.ids.length;
       const cols = n <= 3 ? n : 3, rows = n > 3 ? 2 : 1;
       const cw = 384 / Math.max(cols, 1), rh = rows === 2 ? 118 : 210, top = rows === 2 ? 34 : 48;
+      const pix = assets.sprites.map(img => { try { return img && spritePixels(img); } catch { return null; } });
+      // split in parts: exact 2x when every sprite of the page fits its cell
+      const twice = teamPer(s) < 6 && pix.every(sp => !sp || (sp.w * 2 <= cw - 2 && sp.h * 2 <= rh - 17));
       assets.ids.forEach((id, i) => {
         const c = i % cols, r = Math.floor(i / cols);
         const rowCount = r === rows - 1 ? n - r * cols : cols;            // centre a short last row
         const x = 8 + (384 - rowCount * cw) / 2 + c * cw, y = top + r * rh;
         let sp = null;
         try { sp = assets.sprites[i] && spritePixels(assets.sprites[i]); } catch { sp = null; }
-        if (sp) assets.blits.push({sp, area: [Math.round(x + 1), y, Math.round(cw - 2), rh - 17], valign: 'bottom', halo: 2, fit: 'size'});
+        if (sp) assets.blits.push({sp, area: [Math.round(x + 1), y, Math.round(cw - 2), rh - 17], valign: 'bottom', halo: 2, ...(twice ? {scale: 2} : {fit: 'size'})});
         // name plate (white box, protected from the background)
         const label = up(assets.names[i]);
         ctx.font = FONT(8, true);
@@ -1484,43 +2002,71 @@ const PAGES = {
       try { bg = assets.bg && spritePixels(assets.bg); } catch { bg = null; }
       if (bg) blitSprite(ink, bg, 0, 30, W, H - 30, {...opt, valign: 'center', faint: strength, under: true, protect: assets.protect});
       else raysBackdrop(ink, 30, strength, assets.protect);
-      for (const bl of assets.blits) blitSprite(ink, bl.sp, ...bl.area, {...opt, valign: bl.valign, halo: bl.halo, fit: bl.fit, icon: bl.icon});
+      for (const bl of assets.blits) blitSprite(ink, bl.sp, ...bl.area, {...opt, valign: bl.valign, halo: bl.halo, fit: bl.fit, icon: bl.icon, scale: bl.scale});
       assets.blits = [];
     },
   },
 };
 
-const activePages = () => Object.keys(PAGES).filter(k => state['pg_' + k]);
+// Page keys in the order chosen in the Pages section (new pages go last); the
+// Pokémon of the day always closes the rotation.
+function orderedPages() {
+  const all = Object.keys(PAGES).filter(k => k !== 'daily'), order = Array.isArray(state.pageOrder) ? state.pageOrder : [];
+  return [...order.filter(k => all.includes(k)), ...all.filter(k => !order.includes(k))];
+}
+const activePages = () => [...orderedPages().filter(k => state['pg_' + k]), ...(state.pg_daily ? ['daily'] : [])];
 
-// Classify every canvas pixel to 0=white 1=black 2=red.
-function canvasToInk(ctx, hasRed) {
+// Classify every canvas pixel to an ink code: the pure marker colour of an ink the
+// panel has (INKS[].css), else black or white by brightness.
+function canvasToInk(ctx, palette) {
   const d = ctx.getImageData(0, 0, W, H).data;
   const ink = new Uint8Array(W * H);
+  const hasRed = palette.includes('red');
+  const marks = palette.map(inkCode).filter(c => c > 2).map(c => {
+    const h = INKS[c].css; return [c, parseInt(h[1], 16) * 17, parseInt(h[2], 16) * 17, parseInt(h[3], 16) * 17];
+  });
   for (let i = 0; i < W * H; i++) {
     const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
-    if (hasRed && r > 160 && g < 110 && b < 110) ink[i] = 2;
-    else ink[i] = (0.299 * r + 0.587 * g + 0.114 * b) < 128 ? 1 : 0;
+    let v = hasRed && r > 160 && g < 110 && b < 110 ? 2 : -1;
+    for (let k = 0; v < 0 && k < marks.length; k++) {
+      const m = marks[k];
+      if (Math.abs(r - m[1]) < 60 && Math.abs(g - m[2]) < 60 && Math.abs(b - m[3]) < 60) v = m[0];
+    }
+    ink[i] = v > 0 ? v : (0.299 * r + 0.587 * g + 0.114 * b) < 128 ? 1 : 0;
   }
   return ink;
 }
 
+// Colour of a type chip on colour panels: the first ink of the list the panel has.
+const TYPE_INK = {fire: ['orange', 'red'], water: ['blue'], grass: ['green'], electric: ['yellow'], ice: ['blue'],
+  fighting: ['red'], poison: ['blue', 'red'], ground: ['orange', 'yellow'], flying: ['blue'], psychic: ['red'],
+  bug: ['green', 'yellow'], rock: ['orange', 'yellow'], ghost: ['blue'], dragon: ['blue', 'red'], fairy: ['red']};
+function typeFill(type, s, fallback) {
+  if (!isColour(s)) return fallback;
+  const name = (TYPE_INK[typeKey(type)] || []).find(n => hasInk(s, n));
+  return name ? INKS[inkCode(name)].css : fallback;
+}
+const textOn = css => css === '#ff0' || css === '#f80' || css === '#0f0' ? BLACK : WHITE;   // light inks take black text
+
 // s: data to draw (state, or state + a collection card); idx/total: page dots.
-async function renderPage(key, s = state, idx, total) {
-  const hasRed = hasInk(s, 'red'), acc = hasRed ? '#f00' : BLACK;
+async function renderPage(key, s = state, idx, total, part = 0) {
+  const hasRed = hasInk(s, 'red'), acc = accent(s);
   if (idx == null) {
     total = totalEntries();
-    idx = key === 'daily' ? total - 1 : rotation().findIndex(e => e.key === key && (e.s === s || sameCard(e.s, s)));
+    idx = key === 'daily' ? total - 1 : rotation().findIndex(e => e.key === key && (e.part || 0) === part && (e.s === s || sameCard(e.s, s)));
   }
+  if (part) s = {...s, _part: part};
   const page = PAGES[key];
   const work = document.createElement('canvas'); work.width = W; work.height = H;
   const ctx = work.getContext('2d', {willReadFrequently: true});
   const assets = page.prepare ? await page.prepare(s) : {blits: []};
   chrome(ctx, s, d(key), idx, total, ...(page.header ? page.header(s, assets) : []));
   page.draw(ctx, s, acc, assets);
-  const ink = canvasToInk(ctx, hasRed);
-  const opt = {hasRed, dither: s.dither, contrast: Number(s.contrast) || 0};
+  const ink = canvasToInk(ctx, panelOf(s).palette);
+  const opt = {hasRed, dither: s.dither, contrast: Number(s.contrast) || 0,
+    palette: isColour(s) ? panelOf(s).palette.map(inkCode) : null};
   if (page.finish) page.finish(ink, s, opt, assets);
-  for (const bl of assets?.blits || []) blitSprite(ink, bl.sp, ...bl.area, {...opt, valign: bl.valign || 'center', fit: bl.fit, icon: bl.icon, maxScale: bl.maxScale, gamma: bl.gamma, crisp: bl.crisp});
+  for (const bl of assets?.blits || []) blitSprite(ink, bl.sp, ...bl.area, {...opt, valign: bl.valign || 'center', fit: bl.fit, icon: bl.icon, maxScale: bl.maxScale, gamma: bl.gamma, crisp: bl.crisp, scale: bl.scale});
   if (page.sprite) {
     const img = await getSprite(spriteUrl(s.style, s.dex, s.shiny));
     const sp = spritePixels(img);
@@ -1585,21 +2131,262 @@ function pack(ink) {
   return buf;
 }
 
+// ---------- more pages: countdown, move details, IV/EV chart, evolutions, Pokédex entry ----------
+const teamPer = s => [2, 3].includes(Number(s.teamPer)) ? Number(s.teamPer) : 6;
+
+// Team split over several pages: one row of 3 or 2 Pokémon with room for big sprites.
+// Exact 2x when every sprite of the page fits its cell, otherwise one common size.
+function drawTeamRow(ctx, s, acc, a) {
+  const per = teamPer(s), mons = a.mons.slice((s._part || 0) * per, (s._part || 0) * per + per);
+  const cw = 384 / per, top = 36, ah = 206;
+  const pix = mons.map(m => { try { return m.img && spritePixels(m.img); } catch { return null; } });
+  const twice = pix.every(sp => !sp || (sp.w * 2 <= cw - 4 && sp.h * 2 <= ah));
+  mons.forEach((m, i) => {
+    const x = Math.round(8 + i * cw);
+    if (pix[i]) a.blits.push({sp: pix[i], area: [x + 2, top, Math.round(cw - 4), ah], valign: 'bottom', ...(twice ? {scale: 2} : {fit: 'size'})});
+    ctx.fillStyle = BLACK; ctx.fillRect(x + 12, top + ah + 1, Math.round(cw - 24), 1);
+    text(ctx, up(m.name), x + cw / 2, top + ah + 6, 16, true, BLACK, 'center', cw - 8);
+    if (m.level) text(ctx, up(`${d('lv')} ${m.level}`), x + cw / 2, top + ah + 26, 8, false, BLACK, 'center');
+  });
+}
+
+// Digits drawn from the same strip the board uses (buildGlyphs), as scale x scale
+// blocks: what the firmware redraws every midnight matches pixel for pixel
+// (paintOverlay in src/main.cpp).
+function digitRun(str) {
+  const g = buildGlyphs(), n = g[2], sep = numSep();
+  const idx = [...String(str)].map(ch => ch === sep ? 10 : ch >= '0' && ch <= '9' ? Number(ch) : -1).filter(k => k >= 0 && k < n);
+  return {g, idx, width: idx.reduce((a, k) => a + g[3 + k], 0)};
+}
+function drawDigits(ctx, str, x0, y0, w, align, scale, color) {
+  const {g, idx, width} = digitRun(str);
+  const gw = g[0], gh = g[1], n = g[2], stride = Math.ceil(gw / 8);
+  let x = align === 2 ? x0 + w - width * scale : align === 1 ? x0 + Math.floor((w - width * scale) / 2) : x0;
+  ctx.fillStyle = color;
+  for (const k of idx) {
+    const base = 3 + n + k * gh * stride;
+    for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+      if (!(g[base + gy * stride + (gx >> 3)] & (0x80 >> (gx & 7)))) continue;
+      const px = x + (gx - 2) * scale, l = Math.max(px, x0), r = Math.min(px + scale, x0 + w);
+      if (r > l) ctx.fillRect(l, y0 + gy * scale, r - l, scale);
+    }
+    x += g[3 + k] * scale;
+  }
+}
+
+// Crisp 1-bit line (the canvas' own strokes are anti-aliased). dash: pixels on / off.
+function line(ctx, x0, y0, x1, y1, color, thick = 1, dash = 0) {
+  ctx.fillStyle = color;
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy, n = 0;
+  for (;;) {
+    if (!dash || Math.floor(n / dash) % 2 === 0) ctx.fillRect(x0 - (thick >> 1), y0 - (thick >> 1), thick, thick);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+    n++;
+  }
+}
+
+// A move name typed in any language -> PokeAPI slug, through the name tables in pkx/.
+async function moveSlug(name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return '';
+  const en = await pkxData('en').catch(() => null);
+  if (en?.moves) for (const l of Object.keys(LANGS)) {
+    const T = l === 'en' ? en : await pkxData(l).catch(() => null);
+    const i = T?.moves ? T.moves.findIndex(m => m && m.toLowerCase() === key) : -1;
+    if (i > 0 && en.moves[i]) return sdSlug(en.moves[i]);
+  }
+  return sdSlug(name);
+}
+
+// "31/31/31/31/31/31" -> six numbers (HP Atk Def SpA SpD Spe), or null.
+const six = v => { const a = String(v ?? '').split(/[^0-9]+/).filter(Boolean).map(Number); return a.length === 6 ? a : null; };
+const decimal = v => v.toFixed(1).replace('.', state.dispLang === 'en' ? '.' : ',');
+const slugWords = v => String(v || '').replace(/-/g, ' ');
+
+// How a species evolves from the previous stage, in a few words.
+function evoMethod(det) {
+  if (!det) return '';
+  if (det.min_level) return `${d('lv')} ${det.min_level}`;
+  if (det.item) return slugWords(det.item.name);
+  if (det.trigger?.name === 'trade') return det.held_item ? `${d('evo_trade')} + ${slugWords(det.held_item.name)}` : d('evo_trade');
+  if (det.min_happiness) return d('evo_friend');
+  if (det.known_move) return slugWords(det.known_move.name);
+  if (det.held_item) return slugWords(det.held_item.name);
+  if (det.location) return slugWords(det.location.name);
+  return slugWords(det.trigger?.name);
+}
+
+Object.assign(PAGES, {
+  countdown: {
+    sprite: true,
+    spriteArea: [12, 62, 200, 214],
+    draw(ctx, s, acc, assets) {
+      const x = 226, w = 164, target = parseDay(s.cdDate);
+      wrapLines(up(s.cdTitle || d('countdown')), 16, true, w).slice(0, 3).forEach((l, i) => text(ctx, l, x, 40 + i * 19, 16, true, BLACK));
+      ctx.fillStyle = BLACK; ctx.fillRect(12, 276, 200, 2);
+      if (target == null) { text(ctx, '—', x, 118, 16, false, BLACK); return; }
+      const str = fmtNum(Math.max(0, target - todayDay()));
+      const scale = [3, 2].find(k => digitRun(str).width * k <= w) || 1, y = 118;
+      text(ctx, up(d('days_left')), x, y - 12, 8, true, acc);
+      drawDigits(ctx, str, x, y, w, 0, scale, BLACK);
+      // the board redraws this box every midnight, counting down to the date
+      assets.overlay = {x, y, w, h: GLYPH_H * scale, align: 0, start: target, color: 0, sep: 1, mode: 1, scale};
+      field(ctx, d('cd_date'), s.cdDate, x, y + GLYPH_H * scale + 14, w, acc);
+    },
+  },
+  movedex: {
+    async prepare(s) {
+      const moves = await Promise.all([0, 1, 2, 3].map(async i => {
+        const n = String(s['move' + i] || '').trim();
+        if (!n) return null;
+        try { return await pj('move/' + await moveSlug(n)); } catch { return null; }
+      }));
+      return {moves, blits: []};
+    },
+    draw(ctx, s, acc, a) {
+      for (let i = 0; i < 4; i++) {
+        const y = 40 + i * 61, m = a.moves[i], cat = m?.damage_class?.name;
+        box(ctx, 10, y, 380, 53, false);
+        ctx.fillStyle = typeFill(s['mtype' + i], s, acc); ctx.fillRect(10, y, 12, 53);
+        text(ctx, up(s['move' + i] || '—'), 30, y + 8, 16, true, BLACK, 'left', 204);
+        text(ctx, up([typeName(s['mtype' + i]), cat ? d('cat_' + cat) : ''].filter(Boolean).join(' · ')), 30, y + 34, 8, true, BLACK, 'left', 204);
+        ctx.fillStyle = BLACK; ctx.fillRect(242, y + 6, 1, 41);
+        [['pow', m?.power], ['acc', m?.accuracy], ['pp', m?.pp]].forEach(([k, v], c) => {
+          const cx = 268 + c * 48;
+          text(ctx, up(d(k)), cx, y + 8, 8, true, acc, 'center');
+          text(ctx, v != null ? String(v) : '—', cx, y + 24, 16, false, BLACK, 'center');
+        });
+      }
+    },
+  },
+  radar: {
+    draw(ctx, s, acc) {
+      const ring = ['ps', 'att', 'dif', 'vel', 'dfsp', 'atsp'];      // clockwise from the top, as in the games
+      const list = ['ps', 'att', 'dif', 'atsp', 'dfsp', 'vel'];      // order of the IV / EV fields
+      const vals = ring.map(k => Number(s[k]) || 0), ivs = six(s.ivs), evs = six(s.evs);
+      const cx = 118, cy = 168, R = 78, top = Math.max(...vals, 1);
+      const pt = (i, f, r = R) => {
+        const an = -Math.PI / 2 + i * Math.PI / 3;
+        return [Math.round(cx + Math.cos(an) * r * f), Math.round(cy + Math.sin(an) * r * f)];
+      };
+      const poly = (fs, color, thick, dash) => fs.forEach((f, i) => line(ctx, ...pt(i, f), ...pt((i + 1) % 6, fs[(i + 1) % 6]), color, thick, dash));
+      for (let i = 0; i < 6; i++) line(ctx, cx, cy, ...pt(i, 1), BLACK, 1, 2);
+      poly(Array(6).fill(1), BLACK, 1);
+      poly(Array(6).fill(0.5), BLACK, 1, 2);
+      if (evs) poly(ring.map(k => Math.max(0.04, Math.min(1, evs[list.indexOf(k)] / 252))), acc, hasInk(s, 'red') ? 2 : 1, hasInk(s, 'red') ? 0 : 3);
+      poly(vals.map(v => Math.max(0.06, v / top)), BLACK, 3);
+      ring.forEach((k, i) => {
+        const [lx, ly] = pt(i, 1, R + 20);
+        text(ctx, up(d(k)), Math.max(26, lx), ly - 10, 8, true, BLACK, 'center');
+        text(ctx, String(vals[i]), Math.max(26, lx), ly, 8, false, BLACK, 'center');
+      });
+      // table: stat, IV, EV
+      const x = 244;
+      text(ctx, 'IV', 338, 40, 8, true, acc, 'right');
+      text(ctx, 'EV', 390, 40, 8, true, acc, 'right');
+      list.forEach((k, i) => {
+        const y = 54 + i * 34;
+        text(ctx, up(d(k)), x, y, 8, true, BLACK);
+        text(ctx, String(Number(s[k]) || 0), x, y + 10, 16, true, BLACK);
+        text(ctx, ivs ? String(ivs[i]) : '—', 338, y + 10, 16, false, BLACK, 'right');
+        text(ctx, evs ? String(evs[i]) : '—', 390, y + 10, 16, false, BLACK, 'right');
+      });
+      if (evs) text(ctx, `${up(d('total'))} EV ${evs.reduce((a, b) => a + b, 0)}`, 390, 266, 8, true, BLACK, 'right');
+    },
+  },
+  evo: {
+    async prepare(s) {
+      const sp = await pj(`pokemon-species/${Number(s.dex)}`);
+      const chain = (await pj(sp.evolution_chain.url)).chain;
+      // the line through this species, continued along the first branch
+      const find = (node, trail) => {
+        const here = [...trail, node];
+        if (node.species.name === sp.name) return here;
+        for (const next of node.evolves_to) { const hit = find(next, here); if (hit) return hit; }
+        return null;
+      };
+      let path = find(chain, []) || [chain];
+      const branches = path[path.length - 1].evolves_to.length;
+      while (path[path.length - 1].evolves_to.length) path.push(path[path.length - 1].evolves_to[0]);
+      const at = path.findIndex(n => n.species.name === sp.name);
+      if (path.length > 4) path = path.slice(Math.min(Math.max(0, at - 1), path.length - 4)).slice(0, 4);
+      const stages = await Promise.all(path.map(async node => {
+        const id = Number(node.species.url.match(/\/(\d+)\/?$/)[1]);
+        const [img, name] = await Promise.all([getSprite(spriteUrl(s.style, id, false)).catch(() => null), monName(id, s.dispLang)]);
+        return {id, img, name, method: evoMethod(node.evolution_details?.[0]), current: node.species.name === sp.name};
+      }));
+      return {stages, branches, blits: []};
+    },
+    draw(ctx, s, acc, a) {
+      const n = a.stages.length, cw = 384 / n;
+      if (a.branches > 1) text(ctx, `+${a.branches - 1}`, 390, 40, 8, true, acc, 'right');   // other branches not shown
+      a.stages.forEach((st, i) => {
+        const x = Math.round(8 + i * cw);
+        let sp = null;
+        try { sp = st.img && spritePixels(st.img); } catch { sp = null; }
+        if (sp) a.blits.push({sp, area: [x + 4, 44, Math.round(cw - 8), 154], valign: 'bottom', fit: 'size'});
+        ctx.fillStyle = BLACK; ctx.fillRect(x + 10, 200, Math.round(cw - 20), 1);
+        text(ctx, up(st.name), x + cw / 2, 206, 8, true, BLACK, 'center', cw - 6);
+        text(ctx, `#${String(st.id).padStart(4, '0')}`, x + cw / 2, 217, 8, false, BLACK, 'center');
+        if (st.current) { ctx.fillStyle = acc; ctx.fillRect(x + 10, 229, Math.round(cw - 20), 3); }
+        if (i > 0) {   // arrow on the boundary with the previous stage, how it evolves below
+          const bx = x - 1;
+          ctx.fillStyle = BLACK;
+          for (let c = 0; c < 5; c++) ctx.fillRect(bx - 2 + c, 240 + c, 1, 9 - 2 * c);   // small right-pointing triangle
+          wrapLines(up(st.method), 8, true, cw - 4).slice(0, 2).forEach((l, r) => text(ctx, l, bx, 258 + r * 11, 8, true, BLACK, 'center'));
+        }
+      });
+    },
+  },
+  dexinfo: {
+    sprite: true,
+    spriteArea: [10, 36, 150, 132],
+    async prepare(s) {
+      const id = Number(s.dex), lang = state.dispLang;
+      const [p, sp] = await Promise.all([pj(`pokemon/${id}`).catch(() => null), pj(`pokemon-species/${id}`).catch(() => null)]);
+      return {p, sp, blits: [],
+        genus: sp ? (sp.genera.find(g => g.language.name === lang) || sp.genera.find(g => g.language.name === 'en') || {}).genus || '' : '',
+        flavor: sp ? pickFlavor(sp, s.style, lang) : ''};
+    },
+    draw(ctx, s, acc, a) {
+      ctx.fillStyle = BLACK; ctx.fillRect(10, 170, 150, 2);
+      const x = 172, w = 218;
+      text(ctx, `#${String(s.dex).padStart(4, '0')}`, x, 40, 16, true, BLACK);
+      wrapLines(up(a.genus), 8, true, w).slice(0, 2).forEach((l, i) => text(ctx, l, x, 62 + i * 11, 8, true, BLACK));
+      field(ctx, d('height'), a.p ? `${decimal(a.p.height / 10)} m` : '', x, 90, 100, acc);
+      field(ctx, d('weight'), a.p ? `${decimal(a.p.weight / 10)} kg` : '', x + 112, 90, 106, acc);
+      field(ctx, d('egg'), a.sp ? a.sp.egg_groups.map(g => slugWords(g.name)).join(' / ') : '', x, 128, w, acc);
+      const fl = up(a.flavor || d('flavor_none'));
+      let lines = wrapLines(fl, 16, false, 372), px = 16, lh = 19;
+      if (lines.length > 5) { lines = wrapLines(fl, 8, false, 372).slice(0, 9); px = 8; lh = 11; }
+      const top = 180 + Math.max(0, Math.floor((102 - lines.length * lh) / 2));
+      lines.forEach((l, i) => text(ctx, l, 14, top + i * lh, px, false, BLACK));
+    },
+  },
+});
 // ---------- preview ----------
 function buildTabs() {
   const pages = activePages();
   if (!pages.includes(previewPage)) previewPage = pages[0] || 'cover';
   const tabs = $('tabs'); tabs.innerHTML = '';
   for (const k of pages) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.textContent = t('pg_' + k); b.dataset.page = k;
-    b.setAttribute('aria-pressed', k === previewPage);
-    b.onclick = () => { previewPage = k; previewCard = null; buildTabs(); render(); };
-    tabs.append(b);
+    const parts = k === 'daily' ? 1 : pageParts(k);
+    if (k === previewPage && previewPart >= parts) previewPart = 0;
+    for (let p = 0; p < parts; p++) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = t('pg_' + k) + (parts > 1 ? ' ' + (p + 1) : ''); b.dataset.page = k;
+      b.setAttribute('aria-pressed', k === previewPage && p === previewPart);
+      b.onclick = () => { previewPage = k; previewPart = p; previewCard = null; buildTabs(); render(); };
+      tabs.append(b);
+    }
   }
 }
 
-let renderTimer = 0, renderSeq = 0, previewCard = null;
+let renderTimer = 0, renderSeq = 0, previewCard = null, previewPart = 0;
 function scheduleRender() { clearTimeout(renderTimer); renderTimer = setTimeout(render, 150); }
 // Display name for a list entry: a custom name wins; an empty or stock name (in any
 // language) becomes the legend name in the display language; else the file name.
@@ -1933,6 +2720,60 @@ function renderDailyBox() {
   $('dlInfo').textContent = t('daily_info', {t: ids[todayDay() % ids.length], n: ids.length, l: ids.map(i => '#' + i).join(' ')});
 }
 
+// ---------- pages: which ones, in which order, for how long ----------
+function buildPagesBox() {
+  const fs = document.querySelector('fieldset[data-group="pages"]');
+  if (!fs || $('pagesbox')) return;
+  const box = document.createElement('div'); box.className = 'trbox'; box.id = 'pagesbox';
+  box.innerHTML = '<div class="muted" id="pgInfo"></div><div class="pglist" id="pgList"></div>';
+  fs.querySelector('.grid').before(box);
+  renderPagesBox();
+}
+
+function renderPagesBox() {
+  if (!$('pagesbox')) return;
+  $('pgInfo').textContent = t('pg_info');
+  const order = orderedPages();
+  const changed = () => { buildTabs(); renderCollection(); renderDailyBox(); scheduleRender(); saveState(true); };
+  const rows = [...order, 'daily'].map((key, i) => {
+    const row = document.createElement('div'); row.className = 'pgrow';
+    const lab = document.createElement('label'); lab.className = 'chk';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!state['pg_' + key]; cb.name = 'pg_' + key;
+    cb.oninput = () => { state['pg_' + key] = cb.checked; changed(); };
+    lab.append(cb, t('pg_' + key));
+    const min = document.createElement('input'); min.type = 'number'; min.min = '0'; min.max = '1440';
+    min.placeholder = String(Number(state.interval) || 0); min.title = t('pg_min'); min.setAttribute('aria-label', t('pg_min'));
+    min.value = (state.pageMin || {})[key] || '';
+    min.oninput = () => {
+      const v = Math.max(0, Math.round(Number(min.value) || 0));
+      state.pageMin = {...(state.pageMin || {})};
+      if (v) state.pageMin[key] = v; else delete state.pageMin[key];
+      saveState(true);
+    };
+    const move = (label, by) => {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = label;
+      b.title = t(by < 0 ? 'up' : 'down'); b.setAttribute('aria-label', b.title);
+      b.disabled = key === 'daily' || i + by < 0 || i + by >= order.length;   // the Pokémon of the day stays last
+      b.onclick = () => {
+        const next = [...order];
+        [next[i], next[i + by]] = [next[i + by], next[i]];
+        state.pageOrder = next; renderPagesBox(); changed();
+      };
+      return b;
+    };
+    row.append(lab, min, move('▲', -1), move('▼', 1));
+    return row;
+  });
+  $('pgList').replaceChildren(...rows);
+}
+
+// The page in the preview, as a 400x300 PNG.
+function exportPng() {
+  const a = document.createElement('a');
+  a.download = `dexframe-${previewCard ? 'card' : previewPage}${previewPart ? '-' + (previewPart + 1) : ''}.png`;
+  a.href = $('out').toDataURL('image/png');
+  a.click();
+}
 // ---------- Showdown import ----------
 // Export format: "Nick (Species) (M) @ Item", "Ability: X", "Level: 50", "Shiny: Yes",
 // "EVs: 252 HP / 4 Def", "Modest Nature", "IVs: 0 Atk", "- Move" (one per line).
@@ -1992,6 +2833,7 @@ async function importShowdown(txt) {
     type1: types[0] || '', type2: types[1] || '',
     ability: ab ? locName(ab, lang) : set.ability, nature: na ? locName(na, lang) : set.nature,
     item: it ? locName(it, lang) : set.item,
+    ivs: Object.keys(SD_STATS).map(k => set.ivs[k] ?? 31).join('/'), evs: Object.keys(SD_STATS).map(k => set.evs[k] ?? 0).join('/'),
   });
   for (let i = 0; i < 4; i++) {
     state['move' + i] = mv[i] ? locName(mv[i], lang) : (set.moves[i] || '');
@@ -2183,7 +3025,7 @@ async function extendRibbonNames() {
 
 function pkxLocation(T, gen, loc, version) {
   // Gen 3-5 Pokémon moved forward with Poké Transfer (the label is blank in the Gen 5 text table)
-  if (loc === 30001 && version <= 23) return {it: 'Pokétrasporto', en: 'Poké Transfer'}[state.dispLang] || 'Poké Transfer';
+  if (loc === 30001 && version <= 23) return {it: 'Pokétrasporto', en: 'Poké Transfer', es: 'Pokétransfer', fr: 'Poké Fret', de: 'Poképorter'}[state.dispLang] || 'Poké Transfer';
   const sets = T.locations['g' + Math.max(4, gen)] || {};
   const base = Object.keys(sets).map(Number).filter(b => b <= loc).sort((a, b) => b - a)[0];
   const name = base != null ? sets[base]?.[loc - base] : '';
@@ -2230,6 +3072,7 @@ async function importPkx(file, opts) {
     nature: T.natures[r.nature] || '', ability: T.abilities[r.ability] || '',
     item: r.item ? (T.items[r.item] || '') : '', language: PKX_LANG[r.lang] || '',
     ...Object.fromEntries(STAT.map((k, i) => [k, stats[i]])),
+    ivs: [0, 1, 2, 4, 5, 3].map(i => r.ivs[i]).join('/'), evs: [0, 1, 2, 4, 5, 3].map(i => r.evs[i]).join('/'),   // HP Atk Def SpA SpD Spe
   };
   r.moves.forEach((id, i) => { upd['move' + i] = id ? (T.moves[id] || '') : ''; upd['mtype' + i] = mv[i] ? typeKey(mv[i].type.name) : ''; });
   if (opts.story) {
@@ -2637,7 +3480,11 @@ async function render() {
   renderPicker();
   renderCollection();
   try {
-    const ink = previewCard ? await renderPage('cover', {...state, ...previewCard.data}) : await renderPage(previewPage);
+    // "Preview colours": draw the preview for another panel; what is sent follows the display.
+    const pv = state.previewPanel && PANELS[state.previewPanel] ? {panel: state.previewPanel} : null;
+    const idx = pv && !previewCard ? rotationIndex(previewPage, previewPart) : undefined;
+    const ink = previewCard ? await renderPage('cover', {...state, ...previewCard.data, ...pv})
+      : await renderPage(previewPage, pv ? {...state, ...pv} : state, idx, pv ? totalEntries() : undefined, previewPart);
     if (seq === renderSeq) showInk(ink);
   } catch (e) { setStatus(e.message); }
 }
@@ -2676,6 +3523,18 @@ async function saveState(quiet) {
   if (!quiet) setStatus(r.ok ? t('st_saved') : t('st_save_err', {e: r.status}));
 }
 
+// CRC-32 (zlib), to recognise pages the board already has (GET /api/pages).
+function crc32(bytes) {
+  let c = ~0;
+  for (let i = 0; i < bytes.length; i++) {
+    c ^= bytes[i];
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1));
+  }
+  return ~c >>> 0;
+}
+const minutesOf = hhmm => { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : -1; };
+const overlayArg = o => o ? [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep, o.mode || 0, o.scale || 1].join(',') : '';
+
 // Frames go to slots 0..n-1 (rotation), then the daily pool; then the rotation settings.
 async function sendAll() {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
@@ -2684,26 +3543,37 @@ async function sendAll() {
   const daily = state.pg_daily ? dailyIds() : [];
   if ((deviceInfo.w ?? W) !== W || (deviceInfo.h ?? H) !== H) { setStatus(t('st_size', {w: W, h: H, pw: deviceInfo.w, ph: deviceInfo.h})); return; }
   const dxf = deviceInfo.api >= 2;     // older firmware: raw two-plane pages, fixed size
+  const feat = String(deviceInfo.features || '').split(',');
   const total = entries.length + daily.length, max = dxf ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8;
   if (total > max) { setStatus(t('st_too_many', {n: total, m: max})); return; }
   const dots = entries.length + (daily.length ? 1 : 0);
   let note = '';
   try {
-    const jobs = [...entries.map((e, i) => [e.key, e.s, i]),
-      ...daily.map((id, k) => ['daily', {...state, _dailyId: id}, dots - 1])];
-    // Render everything first: compressed pages differ in size, so check they all fit.
-    const bpp = paletteBpp(panelOf(state).palette), frames = [];
-    for (let i = 0; i < jobs.length; i++) {
-      const [key, s, idx] = jobs[i];
-      setStatus(t('st_rendering', {i: i + 1, n: jobs.length}));
-      const ink = await renderPage(key, s, idx, dots);
-      frames.push({data: dxf ? encodeFrame(ink, W, H, bpp) : pack(ink), overlay: ink.overlay});
-    }
+    const jobs = [...entries.map((e, i) => [e.key, e.s, i, e.part || 0]),
+      ...daily.map((id, k) => ['daily', {...state, _dailyId: id}, dots - 1, 0])];
+    // Render everything first, a few pages at a time (sprites and PokeAPI data load in
+    // parallel): compressed pages differ in size, so check they all fit before sending.
+    const bpp = paletteBpp(panelOf(state).palette), frames = new Array(jobs.length);
+    let next = 0, done = 0;
+    await Promise.all(Array.from({length: Math.min(4, jobs.length)}, async () => {
+      while (next < jobs.length) {
+        const i = next++, [key, s, idx, part] = jobs[i];
+        const ink = await renderPage(key, s, idx, dots, part);
+        const data = dxf ? encodeFrame(ink, W, H, bpp) : pack(ink);
+        frames[i] = {data, ov: overlayArg(ink.overlay), crc: crc32(data)};
+        setStatus(t('st_rendering', {i: ++done, n: jobs.length}));
+      }
+    }));
     const bytes = frames.reduce((a, f) => a + f.data.length, 0);
     if (dxf) {
       const blk = n => Math.ceil(n / 4096) * 4096;     // on flash: whole blocks, +1 for the counter box, +1 upload in progress
       const need = frames.reduce((a, f) => a + blk(f.data.length) + 4096, 0) + blk(Math.max(...frames.map(f => f.data.length)));
       if (need > deviceInfo.pageBudget) { setStatus(t('st_too_big', {n: Math.ceil(need / 1024), m: Math.floor(deviceInfo.pageBudget / 1024)})); return; }
+    }
+    // pages the board already holds, byte for byte, are not sent again
+    let have = new Map();
+    if (feat.includes('pages')) {
+      try { have = new Map((await (await fetch(api('/api/pages'), {cache: 'no-store'})).json()).map(p => [p.slot, p])); } catch {}
     }
     setStatus(t('st_glyphs'));
     const gd = new FormData();
@@ -2711,19 +3581,25 @@ async function sendAll() {
     const gr = await fetch(api('/api/glyphs'), {method: 'POST', body: gd});
     if (gr.status === 404) note = ' · ' + t('st_old_fw');
     else if (!gr.ok) throw new Error(`glyphs: HTTP ${gr.status}`);
+    let skipped = 0;
     for (let i = 0; i < frames.length; i++) {
+      const f = frames[i], h = have.get(i);
+      if (h && h.size === f.data.length && (h.crc >>> 0) === f.crc && String(h.ov || '') === f.ov) { skipped++; continue; }
       setStatus(t('st_sending', {i: i + 1, n: frames.length}));
       const fd = new FormData();
-      fd.append('frame', new Blob([frames[i].data], {type: 'application/octet-stream'}), 'frame.bin');
-      const o = frames[i].overlay;
-      const ov = o ? '&ov=' + [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep].join(',') : '';
-      const r = await fetch(api(`/api/frame?slot=${i}${ov}`), {method: 'POST', body: fd});
+      fd.append('frame', new Blob([f.data], {type: 'application/octet-stream'}), 'frame.bin');
+      const r = await fetch(api(`/api/frame?slot=${i}${f.ov ? '&ov=' + f.ov : ''}`), {method: 'POST', body: fd});
       if (!r.ok) throw new Error(`${t('st_page', {i: i + 1})}: HTTP ${r.status}`);
     }
-    note = ' · ' + t('st_sent_kb', {kb: Math.ceil(bytes / 1024)}) + note;
+    note = ' · ' + t('st_sent_kb', {kb: Math.ceil(bytes / 1024)}) + (skipped ? ' · ' + t('st_skipped', {n: skipped}) : '') + note;
+    const mins = k => Math.max(0, Math.round(Number((state.pageMin || {})[k]) || 0));
     const body = new URLSearchParams({count: entries.length, interval: Math.max(0, Number(state.interval) || 0),
       daily: daily.length, sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
-      tz: state.tz || DEFAULTS.tz, now: Math.floor(Date.now() / 1000)});
+      tz: state.tz || DEFAULTS.tz, now: Math.floor(Date.now() / 1000),
+      qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
+      iv: [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(','),
+      flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
+      batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10))});
     const r = await fetch(api('/api/rotation'), {method: 'POST', body});
     if (!r.ok) throw new Error(`${t('st_rotation')}: HTTP ${r.status}`);
     await saveState(true);
@@ -2840,6 +3716,7 @@ async function applyUiLang() {
   await buildHofBox();
   buildBackupBox();
   buildCollectionBox();
+  buildPagesBox();
   buildDailyBox();
   buildShowdownBox();
   buildPkxBox();
@@ -2860,6 +3737,7 @@ $('uiLang').addEventListener('input', async () => {
 });
 
 $('send').onclick = sendAll;
+$('png').onclick = exportPng;
 $('next').onclick = nextOnDevice;
 $('save').onclick = () => saveState(false);
 $('autofill').onclick = autofill;

@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,6 +70,10 @@ fs.writeFileSync(process.argv[3], encodeFrame(Uint8Array.from(c.px), c.w, c.h, c
         print(f"{'ok  ' if ok else 'FAIL'} {name:14} {w}x{h} {bpp} bpp  {size:7} bytes  ({100 * size / raw:.0f}% of raw)")
         if name == 'page':
             good = out.read_bytes()
+            crc = subprocess.run([str(exe), str(out), 'crc'], capture_output=True, text=True).stdout.strip()
+            ok = crc == str(zlib.crc32(good))
+            failed += not ok
+            print(f"{'ok  ' if ok else 'FAIL'} crc32 matches zlib")
 
     # damaged files must be rejected, not drawn
     bad = {

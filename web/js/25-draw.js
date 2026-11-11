@@ -113,10 +113,13 @@ function raysBackdrop(ink, y0, strength, protect) {
 // Shared chrome: black header with name + page title, page dots at the bottom.
 function chrome(ctx, s, title, idx, total, name = s.name, gender = s.gender) {
   ctx.fillStyle = WHITE; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = BLACK; ctx.fillRect(0, 0, W, 30);
-  const titleW = title ? text(ctx, up(title), W - 10, 11, 8, true, WHITE, 'right') : 0;
-  const nw = text(ctx, up(name), 10, 7, 16, true, WHITE, 'left', W - titleW - 50);
-  if (gender && gender !== '-') drawGender(ctx, 10 + nw + 8, 8, gender, WHITE);
+  // page style: classic = black bar, accent = bar in the accent ink, light = white bar with a rule
+  const light = s.pageStyle === 'light', fg = light ? BLACK : WHITE;
+  ctx.fillStyle = light ? BLACK : s.pageStyle === 'accent' ? accent(s) : BLACK;
+  if (light) ctx.fillRect(0, 28, W, 2); else ctx.fillRect(0, 0, W, 30);
+  const titleW = title ? text(ctx, up(title), W - 10, 11, 8, true, fg, 'right') : 0;
+  const nw = text(ctx, up(name), 10, 7, 16, true, fg, 'left', W - titleW - 50);
+  if (gender && gender !== '-') drawGender(ctx, 10 + nw + 8, 8, gender, fg);
   const dotsX = W / 2 - (total * 12 - 4) / 2;
   for (let i = 0; i < total; i++) box(ctx, dotsX + i * 12, 288, 8, 8, i === idx);
 }

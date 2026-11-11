@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Web UI built from web/ is up to date
+        run: python tools/build_ui.py --check
       - name: Frame codec (web UI encoder against the firmware decoder)
         run: python tests/test_codec.py
       - name: Web UI against a fake board, every panel type

@@ -8,7 +8,7 @@ const PAGES = {
       // right column
       const x = 226, w = 164;
       text(ctx, up(d('type')), x, 40, 8, true, BLACK);
-      if (s.type1) { box(ctx, x, 52, w, 24, true, acc); text(ctx, up(typeName(s.type1)), x + w / 2, 57, 16, true, WHITE, 'center', w - 8); }
+      if (s.type1) { const c1 = typeFill(s.type1, s, acc); box(ctx, x, 52, w, 24, true, c1); text(ctx, up(typeName(s.type1)), x + w / 2, 57, 16, true, textOn(c1), 'center', w - 8); }
       if (s.type2) { box(ctx, x, 80, w, 24, false); text(ctx, up(typeName(s.type2)), x + w / 2, 85, 16, true, BLACK, 'center', w - 8); }
       // up to 4 rows of 36px from y=112: nature, ability, item (if any), days together (or language)
       const start = sinceDay(s), days = start != null ? todayDay() - start : null;
@@ -32,7 +32,7 @@ const PAGES = {
       for (let i = 0; i < 4; i++) {
         const y = 40 + i * 61;
         box(ctx, 10, y, 380, 53, false);
-        ctx.fillStyle = acc; ctx.fillRect(10, y, 12, 53);
+        ctx.fillStyle = typeFill(s['mtype' + i], s, acc); ctx.fillRect(10, y, 12, 53);
         text(ctx, up(s['move' + i] || '—'), 34, y + 10, 16, true, BLACK, 'left', 344);
         text(ctx, up(typeName(s['mtype' + i])), 34, y + 34, 8, true, BLACK);
         text(ctx, String(i + 1), 380, y + 10, 16, false, BLACK, 'right');
@@ -114,8 +114,9 @@ const PAGES = {
       text(ctx, `#${String(a.id).padStart(4, '0')}`, x, 40, 16, true, BLACK);
       wrapLines(up(a.genus), 8, true, w).slice(0, 2).forEach((l, i) => text(ctx, l, x, 64 + i * 11, 8, true, BLACK));
       a.types.forEach((k, i) => {
-        box(ctx, x, 92 + i * 28, w, 24, i === 0, i === 0 ? acc : BLACK);
-        text(ctx, up(typeName(k)), x + w / 2, 97 + i * 28, 16, true, i === 0 ? WHITE : BLACK, 'center', w - 8);
+        const c = i === 0 ? typeFill(k, s, acc) : BLACK;
+        box(ctx, x, 92 + i * 28, w, 24, i === 0, c);
+        text(ctx, up(typeName(k)), x + w / 2, 97 + i * 28, 16, true, i === 0 ? textOn(c) : BLACK, 'center', w - 8);
       });
       // flavor text: 16px if it fits in 4 lines, else 8px
       const fl = up(a.flavor || d('flavor_none'));
@@ -254,7 +255,9 @@ const PAGES = {
       }));
       return {mons, blits: []};
     },
+    parts: s => teamPer(s) < 6 ? Math.ceil(teamIds(s).length / teamPer(s)) : 1,
     draw(ctx, s, acc, a) {
+      if (teamPer(s) < 6) return drawTeamRow(ctx, s, acc, a);
       for (let i = 0; i < 6; i++) {
         const x = 8 + (i % 3) * 128, y = 36 + Math.floor(i / 3) * 124, m = a.mons[i];
         if (!m) { box(ctx, x + 50, y + 34, 24, 24, false); continue; }   // empty slot
@@ -270,8 +273,9 @@ const PAGES = {
   },
   hof: {
     header: s => [s.hofRegion || '—', '-'],
+    parts: s => teamPer(s) < 6 ? Math.ceil(hofIds(s).length / teamPer(s)) : 1,
     async prepare(s) {
-      const ids = hofIds(s);
+      const per = teamPer(s), ids = per < 6 ? hofIds(s).slice((s._part || 0) * per, (s._part || 0) * per + per) : hofIds(s);
       const [sprites, names, bg] = await Promise.all([
         Promise.all(ids.map(id => getSprite(spriteUrl(s.style, id, false)).catch(() => null))),
         Promise.all(ids.map(id => monName(id, s.dispLang))),
@@ -283,13 +287,16 @@ const PAGES = {
       const n = assets.ids.length;
       const cols = n <= 3 ? n : 3, rows = n > 3 ? 2 : 1;
       const cw = 384 / Math.max(cols, 1), rh = rows === 2 ? 118 : 210, top = rows === 2 ? 34 : 48;
+      const pix = assets.sprites.map(img => { try { return img && spritePixels(img); } catch { return null; } });
+      // split in parts: exact 2x when every sprite of the page fits its cell
+      const twice = teamPer(s) < 6 && pix.every(sp => !sp || (sp.w * 2 <= cw - 2 && sp.h * 2 <= rh - 17));
       assets.ids.forEach((id, i) => {
         const c = i % cols, r = Math.floor(i / cols);
         const rowCount = r === rows - 1 ? n - r * cols : cols;            // centre a short last row
         const x = 8 + (384 - rowCount * cw) / 2 + c * cw, y = top + r * rh;
         let sp = null;
         try { sp = assets.sprites[i] && spritePixels(assets.sprites[i]); } catch { sp = null; }
-        if (sp) assets.blits.push({sp, area: [Math.round(x + 1), y, Math.round(cw - 2), rh - 17], valign: 'bottom', halo: 2, fit: 'size'});
+        if (sp) assets.blits.push({sp, area: [Math.round(x + 1), y, Math.round(cw - 2), rh - 17], valign: 'bottom', halo: 2, ...(twice ? {scale: 2} : {fit: 'size'})});
         // name plate (white box, protected from the background)
         const label = up(assets.names[i]);
         ctx.font = FONT(8, true);
@@ -317,43 +324,71 @@ const PAGES = {
       try { bg = assets.bg && spritePixels(assets.bg); } catch { bg = null; }
       if (bg) blitSprite(ink, bg, 0, 30, W, H - 30, {...opt, valign: 'center', faint: strength, under: true, protect: assets.protect});
       else raysBackdrop(ink, 30, strength, assets.protect);
-      for (const bl of assets.blits) blitSprite(ink, bl.sp, ...bl.area, {...opt, valign: bl.valign, halo: bl.halo, fit: bl.fit, icon: bl.icon});
+      for (const bl of assets.blits) blitSprite(ink, bl.sp, ...bl.area, {...opt, valign: bl.valign, halo: bl.halo, fit: bl.fit, icon: bl.icon, scale: bl.scale});
       assets.blits = [];
     },
   },
 };
 
-const activePages = () => Object.keys(PAGES).filter(k => state['pg_' + k]);
+// Page keys in the order chosen in the Pages section (new pages go last); the
+// Pokémon of the day always closes the rotation.
+function orderedPages() {
+  const all = Object.keys(PAGES).filter(k => k !== 'daily'), order = Array.isArray(state.pageOrder) ? state.pageOrder : [];
+  return [...order.filter(k => all.includes(k)), ...all.filter(k => !order.includes(k))];
+}
+const activePages = () => [...orderedPages().filter(k => state['pg_' + k]), ...(state.pg_daily ? ['daily'] : [])];
 
-// Classify every canvas pixel to 0=white 1=black 2=red.
-function canvasToInk(ctx, hasRed) {
+// Classify every canvas pixel to an ink code: the pure marker colour of an ink the
+// panel has (INKS[].css), else black or white by brightness.
+function canvasToInk(ctx, palette) {
   const d = ctx.getImageData(0, 0, W, H).data;
   const ink = new Uint8Array(W * H);
+  const hasRed = palette.includes('red');
+  const marks = palette.map(inkCode).filter(c => c > 2).map(c => {
+    const h = INKS[c].css; return [c, parseInt(h[1], 16) * 17, parseInt(h[2], 16) * 17, parseInt(h[3], 16) * 17];
+  });
   for (let i = 0; i < W * H; i++) {
     const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
-    if (hasRed && r > 160 && g < 110 && b < 110) ink[i] = 2;
-    else ink[i] = (0.299 * r + 0.587 * g + 0.114 * b) < 128 ? 1 : 0;
+    let v = hasRed && r > 160 && g < 110 && b < 110 ? 2 : -1;
+    for (let k = 0; v < 0 && k < marks.length; k++) {
+      const m = marks[k];
+      if (Math.abs(r - m[1]) < 60 && Math.abs(g - m[2]) < 60 && Math.abs(b - m[3]) < 60) v = m[0];
+    }
+    ink[i] = v > 0 ? v : (0.299 * r + 0.587 * g + 0.114 * b) < 128 ? 1 : 0;
   }
   return ink;
 }
 
+// Colour of a type chip on colour panels: the first ink of the list the panel has.
+const TYPE_INK = {fire: ['orange', 'red'], water: ['blue'], grass: ['green'], electric: ['yellow'], ice: ['blue'],
+  fighting: ['red'], poison: ['blue', 'red'], ground: ['orange', 'yellow'], flying: ['blue'], psychic: ['red'],
+  bug: ['green', 'yellow'], rock: ['orange', 'yellow'], ghost: ['blue'], dragon: ['blue', 'red'], fairy: ['red']};
+function typeFill(type, s, fallback) {
+  if (!isColour(s)) return fallback;
+  const name = (TYPE_INK[typeKey(type)] || []).find(n => hasInk(s, n));
+  return name ? INKS[inkCode(name)].css : fallback;
+}
+const textOn = css => css === '#ff0' || css === '#f80' || css === '#0f0' ? BLACK : WHITE;   // light inks take black text
+
 // s: data to draw (state, or state + a collection card); idx/total: page dots.
-async function renderPage(key, s = state, idx, total) {
-  const hasRed = hasInk(s, 'red'), acc = hasRed ? '#f00' : BLACK;
+async function renderPage(key, s = state, idx, total, part = 0) {
+  const hasRed = hasInk(s, 'red'), acc = accent(s);
   if (idx == null) {
     total = totalEntries();
-    idx = key === 'daily' ? total - 1 : rotation().findIndex(e => e.key === key && (e.s === s || sameCard(e.s, s)));
+    idx = key === 'daily' ? total - 1 : rotation().findIndex(e => e.key === key && (e.part || 0) === part && (e.s === s || sameCard(e.s, s)));
   }
+  if (part) s = {...s, _part: part};
   const page = PAGES[key];
   const work = document.createElement('canvas'); work.width = W; work.height = H;
   const ctx = work.getContext('2d', {willReadFrequently: true});
   const assets = page.prepare ? await page.prepare(s) : {blits: []};
   chrome(ctx, s, d(key), idx, total, ...(page.header ? page.header(s, assets) : []));
   page.draw(ctx, s, acc, assets);
-  const ink = canvasToInk(ctx, hasRed);
-  const opt = {hasRed, dither: s.dither, contrast: Number(s.contrast) || 0};
+  const ink = canvasToInk(ctx, panelOf(s).palette);
+  const opt = {hasRed, dither: s.dither, contrast: Number(s.contrast) || 0,
+    palette: isColour(s) ? panelOf(s).palette.map(inkCode) : null};
   if (page.finish) page.finish(ink, s, opt, assets);
-  for (const bl of assets?.blits || []) blitSprite(ink, bl.sp, ...bl.area, {...opt, valign: bl.valign || 'center', fit: bl.fit, icon: bl.icon, maxScale: bl.maxScale, gamma: bl.gamma, crisp: bl.crisp});
+  for (const bl of assets?.blits || []) blitSprite(ink, bl.sp, ...bl.area, {...opt, valign: bl.valign || 'center', fit: bl.fit, icon: bl.icon, maxScale: bl.maxScale, gamma: bl.gamma, crisp: bl.crisp, scale: bl.scale});
   if (page.sprite) {
     const img = await getSprite(spriteUrl(s.style, s.dex, s.shiny));
     const sp = spritePixels(img);

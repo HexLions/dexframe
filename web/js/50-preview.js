@@ -4,15 +4,19 @@ function buildTabs() {
   if (!pages.includes(previewPage)) previewPage = pages[0] || 'cover';
   const tabs = $('tabs'); tabs.innerHTML = '';
   for (const k of pages) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.textContent = t('pg_' + k); b.dataset.page = k;
-    b.setAttribute('aria-pressed', k === previewPage);
-    b.onclick = () => { previewPage = k; previewCard = null; buildTabs(); render(); };
-    tabs.append(b);
+    const parts = k === 'daily' ? 1 : pageParts(k);
+    if (k === previewPage && previewPart >= parts) previewPart = 0;
+    for (let p = 0; p < parts; p++) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = t('pg_' + k) + (parts > 1 ? ' ' + (p + 1) : ''); b.dataset.page = k;
+      b.setAttribute('aria-pressed', k === previewPage && p === previewPart);
+      b.onclick = () => { previewPage = k; previewPart = p; previewCard = null; buildTabs(); render(); };
+      tabs.append(b);
+    }
   }
 }
 
-let renderTimer = 0, renderSeq = 0, previewCard = null;
+let renderTimer = 0, renderSeq = 0, previewCard = null, previewPart = 0;
 function scheduleRender() { clearTimeout(renderTimer); renderTimer = setTimeout(render, 150); }
 // Display name for a list entry: a custom name wins; an empty or stock name (in any
 // language) becomes the legend name in the display language; else the file name.

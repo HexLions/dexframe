@@ -162,7 +162,11 @@ async function render() {
   renderPicker();
   renderCollection();
   try {
-    const ink = previewCard ? await renderPage('cover', {...state, ...previewCard.data}) : await renderPage(previewPage);
+    // "Preview colours": draw the preview for another panel; what is sent follows the display.
+    const pv = state.previewPanel && PANELS[state.previewPanel] ? {panel: state.previewPanel} : null;
+    const idx = pv && !previewCard ? rotationIndex(previewPage, previewPart) : undefined;
+    const ink = previewCard ? await renderPage('cover', {...state, ...previewCard.data, ...pv})
+      : await renderPage(previewPage, pv ? {...state, ...pv} : state, idx, pv ? totalEntries() : undefined, previewPart);
     if (seq === renderSeq) showInk(ink);
   } catch (e) { setStatus(e.message); }
 }

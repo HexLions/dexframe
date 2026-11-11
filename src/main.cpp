@@ -33,7 +33,7 @@
 #ifndef DEVICE_HOSTNAME
 #define DEVICE_HOSTNAME "dexframe"
 #endif
-#define FW_VERSION "1.5.0"
+#define FW_VERSION "1.6.0"
 #define API_LEVEL 2      // 2: DXF1 frames, panel descriptor in /api/info
 #define AP_NAME "DexFrame-Setup"
 
@@ -74,6 +74,12 @@ int slotCount = 1;            // regular pages in rotation (slots 0..slotCount-1
 int dailyCount = 0;           // "of the day" pool, slots slotCount..slotCount+dailyCount-1
 uint32_t intervalMin = 10;    // 0 = manual only (button / API)
 bool sleepEnabled = false;
+int quietFrom = -1, quietTo = -1;   // quiet hours, minutes of the day; -1 = off. No timed page change inside.
+String pageIntervals;               // minutes per rotation entry "5,30,0,…"; 0 or missing = intervalMin
+bool flipScreen = false;            // panel mounted upside down
+uint8_t actDouble = 0, actLong = 0; // button: 0 nothing, 1 next page, 2 previous page, 3 full refresh
+int batLowMv = BAT_LOW_MV;
+int fullEvery = FULL_EVERY;         // partial refreshes of the counter before a full one
 uint32_t awakeMin = 3;        // stay online this long after a button wake / power-on
 String tz = DEFAULT_TZ;
 String wifiSsid, wifiPass, hostName, adminKey;
@@ -143,8 +149,8 @@ Overlay readOverlay(int slot) {
   File f = LittleFS.open(slotPath(slot, ".ov"), "r");
   if (!f) return o;
   String s = f.readString(); f.close();
-  long v[8]; int n = 0, from = 0;
-  while (n < 8) {
+  long v[10]; int n = 0, from = 0;
+  while (n < 10) {
     int c = s.indexOf(',', from);
     v[n++] = s.substring(from, c < 0 ? s.length() : c).toInt();
     if (c < 0) break;
@@ -152,6 +158,8 @@ Overlay readOverlay(int slot) {
   }
   if (n < 7) return o;
   o = {(int)v[0], (int)v[1], (int)v[2], (int)v[3], (int)v[4], (int32_t)v[5], (int)v[6], n > 7 ? (int)v[7] : 0, true};
+  o.mode = n > 8 ? (int)v[8] : 0;
+  o.scale = n > 9 ? constrain((int)v[9], 1, 4) : 1;
   o.ok = o.w > 0 && o.h > 0 && o.x >= 0 && o.y >= 0 && o.x + o.w <= W && o.y + o.h <= H;
   return o;
 }
@@ -179,7 +187,7 @@ void loadGlyphs() {
 bool layoutOverlay(const Overlay& o, OverlayRun& r) {
   int32_t today = todayLocal();
   if (!o.ok || today < 0 || !glyphs.bits || glyphs.n < 10) return false;
-  long days = today - o.start;
+  long days = o.mode == 1 ? (long)o.start - today : (long)today - o.start;
   if (days < 0) days = 0;
   char digits[16];
   snprintf(digits, sizeof digits, "%ld", days);
@@ -190,7 +198,7 @@ bool layoutOverlay(const Overlay& o, OverlayRun& r) {
     r.idx[r.k++] = digits[i] - '0';
   }
   int total = 0;
-  for (int i = 0; i < r.k; i++) total += glyphs.adv[r.idx[i]];
+  for (int i = 0; i < r.k; i++) total += glyphs.adv[r.idx[i]] * o.scale;
   r.x = o.align == 2 ? o.x + o.w - total : o.align == 1 ? o.x + (o.w - total) / 2 : o.x;
   return true;
 }
@@ -203,13 +211,16 @@ void paintOverlay(const Overlay& o, const OverlayRun& r) {
   int x = r.x;
   for (int i = 0; i < r.k; i++) {
     const uint8_t* g = glyphs.bits + (size_t)r.idx[i] * glyphs.gh * stride;
-    for (int gy = 0; gy < glyphs.gh && gy < o.h; gy++)
+    const int sc = o.scale;
+    for (int gy = 0; gy < glyphs.gh && gy * sc < o.h; gy++)
       for (int gx = 0; gx < glyphs.gw; gx++)
-        if (g[gy * stride + (gx >> 3)] & (0x80 >> (gx & 7))) {
-          int px = x - 2 + gx;                           // glyphs carry a 2 px left pad
-          if (px >= o.x && px < o.x + o.w) display.drawPixel(px, o.y + gy, col);
-        }
-    x += glyphs.adv[r.idx[i]];
+        if (g[gy * stride + (gx >> 3)] & (0x80 >> (gx & 7)))
+          for (int dx = 0; dx < sc; dx++) {
+            int px = x + (gx - 2) * sc + dx;             // glyphs carry a 2 px left pad
+            if (px < o.x || px >= o.x + o.w) continue;
+            for (int dy = 0; dy < sc && gy * sc + dy < o.h; dy++) display.drawPixel(px, o.y + gy * sc + dy, col);
+          }
+    x += glyphs.adv[r.idx[i]] * sc;
   }
 }
 
@@ -292,10 +303,11 @@ bool drawEntry(int entry, bool full) {
   OverlayRun run;
   bool hasOv = layoutOverlay(ov, run);
   int mv = batteryMv();
-  bool lowBat = mv >= 1000 && mv <= BAT_LOW_MV;   // <1 V = no battery connected
+  bool lowBat = mv >= 1000 && mv <= batLowMv;   // <1 V = no battery connected
 
-  bool partial = !full && PANEL_PARTIAL && hasOv && rtcPartials < FULL_EVERY;
+  bool partial = !full && PANEL_PARTIAL && hasOv && rtcPartials < fullEvery;
   busy = true;
+  display.setRotation(flipScreen ? 2 : 0);
   if (partial) {
     display.setPartialWindow(ov.x & ~7, ov.y, ((ov.x + ov.w + 7) & ~7) - (ov.x & ~7), ov.h);
     rtcPartials++;
@@ -333,6 +345,47 @@ void goTo(int entry) {
   lastSwitch = millis();
   pendingDraw = true;
   pendingFull = true;
+}
+
+// ---------------------------------------------------------------- timing
+// Minutes this rotation entry stays on screen (0 = no timed change).
+uint32_t entryInterval(int entry) {
+  if (intervalMin == 0) return 0;
+  int from = 0;
+  for (int i = 0; from <= (int)pageIntervals.length(); i++) {
+    int c = pageIntervals.indexOf(',', from);
+    if (c < 0) c = pageIntervals.length();
+    if (i == entry) {
+      long v = pageIntervals.substring(from, c).toInt();
+      return v > 0 ? (uint32_t)v : intervalMin;
+    }
+    from = c + 1;
+  }
+  return intervalMin;
+}
+
+bool inQuiet(time_t t) {
+  if (quietFrom < 0 || quietTo < 0 || quietFrom == quietTo || t < 1700000000) return false;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  int m = lt.tm_hour * 60 + lt.tm_min;
+  return quietFrom < quietTo ? (m >= quietFrom && m < quietTo) : (m >= quietFrom || m < quietTo);
+}
+
+// First moment at or after t outside the quiet hours.
+time_t quietEnd(time_t t) {
+  if (!inQuiet(t)) return t;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  int m = lt.tm_hour * 60 + lt.tm_min;
+  return t + (time_t)((quietTo - m + 1440) % 1440) * 60 - lt.tm_sec;
+}
+
+// Button actions: 1 next page, 2 previous page, 3 full refresh of the current one.
+void buttonAction(uint8_t a) {
+  if (a == 1) goTo(current + 1);
+  else if (a == 2) goTo(current - 1);
+  else if (a == 3) { pendingDraw = true; pendingFull = true; rtcPartials = 0; }
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -426,7 +479,7 @@ void handleGlyphsDone() {
   server.send(204);
 }
 
-// POST /api/rotation  count interval [daily sleep awake tz now]
+// POST /api/rotation  count interval [daily sleep awake tz now qf qt iv flip dbl lng batlow fullevery]
 void handleRotation() {
   touch();
   if (!authorized()) return;
@@ -447,6 +500,22 @@ void handleRotation() {
     long long now = atoll(server.arg("now").c_str());
     if (now > 1700000000LL) { struct timeval tv = {(time_t)now, 0}; settimeofday(&tv, nullptr); }
   }
+  if (server.hasArg("qf") && server.hasArg("qt")) {
+    quietFrom = constrain(server.arg("qf").toInt(), -1, 1439);
+    quietTo = constrain(server.arg("qt").toInt(), -1, 1439);
+    prefs.putInt("qf", quietFrom); prefs.putInt("qt", quietTo);
+  }
+  if (server.hasArg("iv") && server.arg("iv").length() < 400) {
+    String iv = server.arg("iv");
+    bool ok = true;
+    for (size_t i = 0; ok && i < iv.length(); i++) ok = isdigit((unsigned char)iv[i]) || iv[i] == ',';
+    if (ok) { pageIntervals = iv; prefs.putString("ivs", pageIntervals); }
+  }
+  if (server.hasArg("flip")) { flipScreen = server.arg("flip") == "1"; prefs.putBool("flip", flipScreen); }
+  if (server.hasArg("dbl")) { actDouble = constrain(server.arg("dbl").toInt(), 0, 3); prefs.putUChar("dbl", actDouble); }
+  if (server.hasArg("lng")) { actLong = constrain(server.arg("lng").toInt(), 0, 3); prefs.putUChar("lng", actLong); }
+  if (server.hasArg("batlow")) { batLowMv = constrain(server.arg("batlow").toInt(), 3000, 4200); prefs.putInt("batlow", batLowMv); }
+  if (server.hasArg("fullevery")) { fullEvery = constrain(server.arg("fullevery").toInt(), 1, 100); prefs.putInt("fullevery", fullEvery); }
   applyTz();
   prefs.putInt("count", slotCount);
   prefs.putInt("daily", dailyCount);
@@ -492,12 +561,36 @@ String paletteJson() {
   return j + "]";
 }
 
+// GET /api/pages -> [{slot,size,crc,ov}] for the pages in use: lets the web UI skip
+// uploading a page the board already has.
+void handlePages() {
+  touch();
+  String j = "[";
+  static uint8_t buf[1024];
+  for (int s = 0; s < slotCount + dailyCount; s++) {
+    File f = LittleFS.open(slotPath(s, ".bin"), "r");
+    if (!f) continue;
+    uint32_t crc = 0;
+    size_t n;
+    while ((n = f.read(buf, sizeof buf)) > 0) crc = dxf::crc32(crc, buf, n);
+    String ov;
+    File o = LittleFS.open(slotPath(s, ".ov"), "r");
+    if (o) { ov = o.readString(); o.close(); }
+    if (j.length() > 1) j += ',';
+    j += "{\"slot\":" + String(s) + ",\"size\":" + String(f.size()) + ",\"crc\":" + String(crc) +
+         ",\"ov\":\"" + jsonEscape(ov) + "\"}";
+    f.close();
+  }
+  server.send(200, "application/json", j + "]");
+}
+
 void handleInfo() {
   touch();
   int mv = batteryMv();
   String j = "{\"w\":" + String(W) + ",\"h\":" + String(H) +
              ",\"red\":" + (panelHasInk(2) ? "true" : "false") +
              ",\"api\":" + String(API_LEVEL) +
+             ",\"features\":\"pages,quiet,intervals,flip,button,thresholds,countdown\"" +
              ",\"panel\":\"" PANEL_ID "\"" +
              ",\"panelName\":\"" PANEL_NAME "\"" +
              ",\"palette\":" + paletteJson() +
@@ -685,6 +778,7 @@ void stopAP() {
 // when the board is online but has no pages yet.
 void drawTextScreen(const char* const* big, int nBig, const char* const* small, int nSmall) {
   busy = true;
+  display.setRotation(flipScreen ? 2 : 0);
   display.setFullWindow();
   display.firstPage();
   do {
@@ -873,6 +967,7 @@ void startServer() {
     server.send(204);
   });
   server.on("/api/trainer", HTTP_POST, handleTrainerFetch);
+  server.on("/api/pages", HTTP_GET, handlePages);
   server.on("/api/reset", HTTP_POST, [] {
     touch();
     if (!authorized()) return;
@@ -905,10 +1000,12 @@ void startServer() {
 // page on screen carries a day counter (whichever comes first).
 uint64_t secondsToNextWake() {
   uint64_t s = 0;
-  if (intervalMin > 0 && entryCount() > 1) {
+  uint32_t iv = entryInterval(current);
+  if (iv > 0 && entryCount() > 1) {
     time_t now = time(nullptr);
-    if (rtcPageDueAt <= now) rtcPageDueAt = now + intervalMin * 60;
-    s = rtcPageDueAt - now;
+    if (rtcPageDueAt <= now) rtcPageDueAt = now + iv * 60;
+    rtcPageDueAt = quietEnd(rtcPageDueAt);      // no page change during the quiet hours
+    s = rtcPageDueAt > now ? rtcPageDueAt - now : 1;
   }
   // midnight: the counter changes, and so does the Pokémon of the day
   if ((readOverlay(entrySlot(current)).ok || current >= slotCount) && timeValid()) {
@@ -943,6 +1040,14 @@ void loadConfig() {
   sleepEnabled = prefs.getBool("sleep", false);
   awakeMin = prefs.getUInt("awake", 3);
   tz = prefs.getString("tz", DEFAULT_TZ);
+  quietFrom = prefs.getInt("qf", -1);
+  quietTo = prefs.getInt("qt", -1);
+  pageIntervals = prefs.getString("ivs", "");
+  flipScreen = prefs.getBool("flip", false);
+  actDouble = prefs.getUChar("dbl", 0);
+  actLong = prefs.getUChar("lng", 0);
+  batLowMv = prefs.getInt("batlow", BAT_LOW_MV);
+  fullEvery = prefs.getInt("fullevery", FULL_EVERY);
   wifiSsid = prefs.getString("ssid", WIFI_SSID);
   wifiPass = prefs.getString("pass", WIFI_PASS);
   hostName = prefs.getString("host", DEVICE_HOSTNAME);
@@ -973,7 +1078,8 @@ void setup() {
     }
     // The RTC keeps system time across deep sleep: the interval elapsed -> next page,
     // otherwise this is the midnight wake that only updates the day counter.
-    bool pageDue = intervalMin > 0 && entryCount() > 1 && time(nullptr) + 30 >= rtcPageDueAt;
+    bool pageDue = entryInterval(current) > 0 && entryCount() > 1 && time(nullptr) + 30 >= rtcPageDueAt &&
+                   !inQuiet(time(nullptr) + 30);
     if (pageDue) {
       current = (current + 1) % entryCount();
       rtcEntry = current;
@@ -1018,16 +1124,29 @@ void loop() {
   } else bootDownSince = 0;
 
   // Buttons: BOOT (GPIO0) and the external one (GPIO33), active low, debounced.
-  static uint32_t lastBtnMs = 0;
+  static uint32_t lastBtnMs = 0, pressedAt = 0, clickAt = 0;
   bool b0 = digitalRead(BTN_BOOT), b1 = digitalRead(BTN_WAKE);
   if ((b0 != lastBoot || b1 != lastWake) && millis() - lastBtnMs > 50) {
     lastBtnMs = millis();
     bool pressed = (b0 == LOW && lastBoot == HIGH) || (b1 == LOW && lastWake == HIGH);
+    bool released = (b0 == HIGH && lastBoot == LOW) || (b1 == HIGH && lastWake == LOW);
     lastBoot = b0; lastWake = b1;
-    if (pressed && !busy) { touch(); goTo(current + 1); }
+    if (pressed) { pressedAt = millis(); touch(); }
+    // The action runs on release: short press = next page (or a double click, when one
+    // is configured), a press held for a second = the long-press action.
+    if (released && pressedAt && !busy) {
+      uint32_t held = millis() - pressedAt;
+      pressedAt = 0;
+      if (held >= 900 && actLong) { clickAt = 0; buttonAction(actLong); }
+      else if (!actDouble) buttonAction(1);
+      else if (clickAt && millis() - clickAt < 450) { clickAt = 0; buttonAction(actDouble); }
+      else clickAt = millis();
+    }
   }
+  if (clickAt && millis() - clickAt >= 450) { clickAt = 0; buttonAction(1); }   // no second click came
 
-  if (intervalMin > 0 && entryCount() > 1 && millis() - lastSwitch >= intervalMin * 60000UL) {
+  uint32_t iv = entryInterval(current);
+  if (iv > 0 && entryCount() > 1 && millis() - lastSwitch >= iv * 60000UL && !inQuiet(time(nullptr))) {
     goTo(current + 1);
   }
 
