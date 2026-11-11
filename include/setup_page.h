@@ -47,7 +47,25 @@ fw:'Update firmware',fwi:'File dexframe-…-ota.bin (or .pio/build/<env>/firmwar
 ui:'Upload web interface',uii:'Pick the project data/www folder: files are copied one by one, pages and data are kept.',
 adm:'Security',admi:'Optional key: when set, every change (pages, updates, Wi-Fi) requires it. To clear Wi-Fi and key, hold the button (GPIO33, or BOOT) for 8 seconds.',
 key:'Current key (if set)',nkey:'New key (empty = none)',setkey:'Change key',forget:'Forget Wi-Fi',open:'Open DexFrame →',saved:'Saved, restarting…',done:'Done',err:'Error: ',
-scanning:'Scanning…',conn:'Connected to: ',ap:'Setup mode',sending:'Sending ',reboot:'Updated, restarting…'}};
+scanning:'Scanning…',conn:'Connected to: ',ap:'Setup mode',sending:'Sending ',reboot:'Updated, restarting…'},
+es:{wifi:'Red Wi-Fi',scan:'Buscar redes',ssid:'Nombre de la red (SSID)',pass:'Contraseña',host:'Nombre de la pantalla (http://NOMBRE.local)',save:'Guardar y reiniciar',
+fw:'Actualizar firmware',fwi:'Archivo dexframe-…-ota.bin (o .pio/build/<env>/firmware.bin). Páginas y datos se conservan.',
+ui:'Subir interfaz web',uii:'Elige la carpeta data/www del proyecto: los archivos se copian uno a uno, páginas y datos se conservan.',
+adm:'Seguridad',admi:'Clave opcional: si se define, cada cambio (páginas, actualizaciones, Wi-Fi) la requiere. Para borrar Wi-Fi y clave, mantén pulsado el botón (GPIO33, o BOOT) 8 segundos.',
+key:'Clave actual (si está definida)',nkey:'Nueva clave (vacía = ninguna)',setkey:'Cambiar clave',forget:'Olvidar Wi-Fi',open:'Abrir DexFrame →',saved:'Guardado, reiniciando…',done:'Hecho',err:'Error: ',
+scanning:'Buscando…',conn:'Conectado a: ',ap:'Modo configuración',sending:'Enviando ',reboot:'Actualizado, reiniciando…'},
+fr:{wifi:'Réseau Wi-Fi',scan:'Rechercher',ssid:'Nom du réseau (SSID)',pass:'Mot de passe',host:'Nom de l\'écran (http://NOM.local)',save:'Enregistrer et redémarrer',
+fw:'Mettre à jour le firmware',fwi:'Fichier dexframe-…-ota.bin (ou .pio/build/<env>/firmware.bin). Pages et données sont conservées.',
+ui:'Envoyer l\'interface web',uii:'Choisissez le dossier data/www du projet : les fichiers sont copiés un par un, pages et données sont conservées.',
+adm:'Sécurité',admi:'Clé facultative : si elle est définie, chaque modification (pages, mises à jour, Wi-Fi) la demande. Pour effacer Wi-Fi et clé, maintenez le bouton (GPIO33, ou BOOT) 8 secondes.',
+key:'Clé actuelle (si définie)',nkey:'Nouvelle clé (vide = aucune)',setkey:'Changer la clé',forget:'Oublier le Wi-Fi',open:'Ouvrir DexFrame →',saved:'Enregistré, redémarrage…',done:'Terminé',err:'Erreur : ',
+scanning:'Recherche…',conn:'Connecté à : ',ap:'Mode configuration',sending:'Envoi de ',reboot:'Mis à jour, redémarrage…'},
+de:{wifi:'WLAN',scan:'Netzwerke suchen',ssid:'Netzwerkname (SSID)',pass:'Passwort',host:'Name des Displays (http://NAME.local)',save:'Speichern und neu starten',
+fw:'Firmware aktualisieren',fwi:'Datei dexframe-…-ota.bin (oder .pio/build/<env>/firmware.bin). Seiten und Daten bleiben erhalten.',
+ui:'Web-Oberfläche hochladen',uii:'Wähle den Ordner data/www des Projekts: die Dateien werden einzeln kopiert, Seiten und Daten bleiben erhalten.',
+adm:'Sicherheit',admi:'Optionaler Schlüssel: ist er gesetzt, verlangt ihn jede Änderung (Seiten, Updates, WLAN). Um WLAN und Schlüssel zu löschen, die Taste (GPIO33, oder BOOT) 8 Sekunden halten.',
+key:'Aktueller Schlüssel (falls gesetzt)',nkey:'Neuer Schlüssel (leer = keiner)',setkey:'Schlüssel ändern',forget:'WLAN vergessen',open:'DexFrame öffnen →',saved:'Gespeichert, Neustart…',done:'Fertig',err:'Fehler: ',
+scanning:'Suche…',conn:'Verbunden mit: ',ap:'Einrichtungsmodus',sending:'Sende ',reboot:'Aktualisiert, Neustart…'}};
 const L=T[(navigator.language||'en').slice(0,2)]||T.en,$=i=>document.getElementById(i);
 document.querySelectorAll('[data-t]').forEach(e=>e.textContent=L[e.dataset.t]);
 let key='';try{key=localStorage.getItem('dexframe-key')||''}catch{}$('key').value=key;

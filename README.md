@@ -8,6 +8,8 @@ An e-paper showcase for your Pokémon. Pick a Pokémon, fill in its card, and De
 
 ![Trainer card, team, Hall of Fame, Pokémon of the day](docs/more_pages.png)
 
+![Countdown, move details, IV/EV chart, evolutions, Pokédex entry, team on two pages](docs/new_pages.png)
+
 ## How it works
 
 - The **browser** renders the full 400×300 frame on a `<canvas>`: layout, 1-bit text, and the sprite (loaded from [PokeAPI/sprites](https://github.com/PokeAPI/sprites)).
@@ -51,7 +53,12 @@ Below 3.5 V a small battery mark appears in the bottom-left corner of the page.
 
 ## Install
 
-### Ready-made binaries (no toolchain)
+### From the browser (no toolchain)
+
+Open the [web installer](https://hexlions.github.io/dexframe/) in Chrome or Edge on a computer, pick your panel,
+plug the board in and press *Install*. It flashes the same factory image as below, then continue from step 3.
+
+### Ready-made binaries
 
 1. Download `dexframe-<panel>-factory.bin` for your panel (`bw`, `bwr`, … see *Panels*) from the
    [Releases](https://github.com/HexLions/dexframe/releases) page.
@@ -137,6 +144,8 @@ Off by default; turn them on in *Pages*.
   (`/api/pages` returns size and CRC-32 of each), so a small change uploads one page instead of all.
 
 ## Colour
+
+![Portrait, moves and team on a black/white/red/yellow panel (preview)](docs/colour.png)
 
 On panels with yellow or more inks (build `bwry`), sprites are dithered between the panel's inks and type
 chips and move stripes take a colour by type. *Display → Preview colours* draws the preview for another
@@ -341,6 +350,14 @@ Raw two-plane pages from firmware 1.4.0 (30000 bytes) are still accepted on 400�
 `python3 tools/build_ui.py`. The script only joins the files in name order, with no bundler or minifier, so the
 file the board serves stays readable. CI fails if the generated file is not up to date.
 
+## Web installer
+
+`installer/index.html` plus `tools/build_installer.py` make a small site with
+[ESP Web Tools](https://esphome.github.io/esp-web-tools/): one manifest per panel pointing at the factory
+image, and the ESP Web Tools files copied next to the page (taken from the npm package at build time, nothing
+is loaded from a CDN). CI builds it on every run and publishes it to GitHub Pages when a `v*` tag is pushed;
+the repository needs *Settings → Pages → Source: GitHub Actions*.
+
 ## Tests
 
 ```bash
@@ -363,6 +380,7 @@ Both run in CI on every push, next to the firmware builds.
 - [x] Countdown, move details, IV/EV chart, evolutions, Pokédex entry, team on several pages
 - [x] Spanish, French, German
 - [x] Colour on the 4-ink panel (sprites and type colours quantised to the panel's inks), colour preview
+- [x] Web installer (flash from the browser)
 - [ ] 6-colour panels (firmware build; the web UI can already preview them)
 - [ ] Layouts that adapt to other panel sizes (2.9", 7.3")
 

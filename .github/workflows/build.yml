@@ -58,6 +58,36 @@ jobs:
           name: dexframe-${{ matrix.panel }}
           path: dist/*.bin
 
+  # Web installer (ESP Web Tools): built on every run, published to GitHub Pages on v* tags.
+  # Needs Settings -> Pages -> Source: "GitHub Actions" in the repository.
+  installer:
+    needs: firmware
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build the installer site
+        run: |
+          npm pack esp-web-tools@10.4.0
+          tar xzf esp-web-tools-10.4.0.tgz
+          VERSION=$(sed -n 's/^#define FW_VERSION "\(.*\)"/\1/p' src/main.cpp)
+          python3 tools/build_installer.py --dist dist --ewt package/dist/web --version "$VERSION" --out site
+      - uses: actions/upload-pages-artifact@v3
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [tests, firmware]
