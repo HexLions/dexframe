@@ -8,11 +8,13 @@ An e-paper showcase for your Pokémon. Pick a Pokémon, fill in its card, and De
 
 ![Trainer card, team, Hall of Fame, Pokémon of the day](docs/more_pages.png)
 
+![Countdown, move details, IV/EV chart, evolutions, Pokédex entry, team on two pages](docs/new_pages.png)
+
 ## How it works
 
 - The **browser** renders the full 400×300 frame on a `<canvas>`: layout, 1-bit text, and the sprite (loaded from [PokeAPI/sprites](https://github.com/PokeAPI/sprites)).
 - Sprites are scaled by **integer factors** with nearest-neighbour; shading is an ordered dither **inside each sprite pixel's block**, so the pixel grid stays sharp.
-- Each card is split into **pages** (Portrait, Moves, Stats, Weaknesses, History, Ribbons, Trainer, Hall of Fame, Pokémon of the day) with 16px text for readability. Pages are packed into two 1-bit planes (black, red) and uploaded to the ESP32, which stores them on LittleFS (up to 28) and rotates them on a timer. No server, no cloud.
+- Each card is split into **pages** (Portrait, Moves, Stats, Weaknesses, History, Ribbons, Trainer, Hall of Fame, Pokémon of the day) with 16px text for readability. Pages are stored as palette-indexed pixels with run-length compression (a few KB each, see *Frame format*) and uploaded to the ESP32, which keeps them on LittleFS and rotates them on a timer. No server, no cloud.
 - The **BOOT button** (GPIO0) or an external button on **GPIO33** jumps to the next page; GPIO33 also wakes the board from deep sleep.
 - The **"Days together"** counter on the portrait is redrawn by the ESP32 itself every midnight (NTP time), using a digit strip rendered by the browser — on B/W panels with a partial refresh, no full-screen flash.
 - The [Silkscreen](https://fonts.google.com/specimen/Silkscreen) pixel font (OFL-1.1) is bundled in `data/www/fonts/`, so the UI works without Google Fonts.
@@ -22,7 +24,7 @@ An e-paper showcase for your Pokémon. Pick a Pokémon, fill in its card, and De
 | Part | Notes |
 |---|---|
 | ESP32 board | WEMOS LOLIN32 Lite (tested layout) or any `esp32dev`-compatible DevKit (WROOM-32) |
-| 4.2" SPI e-paper, 400×300, SSD1683 | B/W (`GDEY042T81`) or B/W/Red (`GDEY042Z98`), e.g. WeAct Studio module |
+| 4.2" SPI e-paper, 400×300 | B/W (`GDEY042T81`) or B/W/Red (`GDEY042Z98`), e.g. WeAct Studio module; see *Panels* for the others |
 | Push button (optional) | 6×6 tactile, GPIO33 ↔ GND: next page + wake from deep sleep |
 | LiPo + charger (optional) | e.g. 1S LiPo + TP4056 with protection into the DevKit 5V/VIN pin; battery sense on GPIO35 via a 100k/100k divider |
 
@@ -51,9 +53,14 @@ Below 3.5 V a small battery mark appears in the bottom-left corner of the page.
 
 ## Install
 
-### Ready-made binaries (no toolchain)
+### From the browser (no toolchain)
 
-1. Download `dexframe-bw-factory.bin` (or `dexframe-bwr-factory.bin` for the red panel) from the
+Open the [web installer](https://hexlions.github.io/dexframe/) in Chrome or Edge on a computer, pick your panel,
+plug the board in and press *Install*. It flashes the same factory image as below, then continue from step 3.
+
+### Ready-made binaries
+
+1. Download `dexframe-<panel>-factory.bin` for your panel (`bw`, `bwr`, … see *Panels*) from the
    [Releases](https://github.com/HexLions/dexframe/releases) page.
 2. Flash it **at address 0x0** with the [ESP web flasher](https://espressif.github.io/esptool-js/) (Chrome/Edge, USB cable),
    or `esptool.py --chip esp32 write_flash 0x0 dexframe-bw-factory.bin`.
@@ -66,7 +73,7 @@ Below 3.5 V a small battery mark appears in the bottom-left corner of the page.
 
 ```bash
 git clone https://github.com/HexLions/dexframe.git && cd dexframe
-pio run -e bw -t upload        # B/W panel   (use -e bwr for the B/W/Red panel)
+pio run -e bw -t upload        # B/W panel   (other panels: -e bwr, -e bwry, see Panels)
 pio run -e bw -t uploadfs      # web UI to LittleFS (first install only)
 pio device monitor             # prints the setup / device URL
 ```
@@ -78,14 +85,25 @@ pio device monitor             # prints the setup / device URL
 If the saved network is unreachable, the board opens the `DexFrame-Setup` access point and keeps
 retrying the network in the background; it closes the access point as soon as the network is back.
 
+### Upgrading from 1.x to 2.0
+
+2.0 changes the partition table (two 1.5 MB app slots and a 960 KB file system, `partitions.csv`, instead of
+1.25 MB slots and 1.4 MB): there is room for new firmware features again, and the web UI is stored gzipped so
+the smaller file system still has more free space than before. An update over Wi-Fi cannot move partitions,
+so **flash the factory image once** (web installer or esptool, see *Install*); export a backup first, it
+erases the board. A 2.0 firmware installed over Wi-Fi on a 1.x board runs, but keeps the old layout and says
+so in *System*.
+
 ### Updates over Wi-Fi
 
 *System* section of the web UI (or `http://dexframe.local/setup`, which is built into the firmware and
 works even with an empty file system):
 
-- **Update firmware**: `dexframe-bw-ota.bin` / `dexframe-bwr-ota.bin` from the release, or `.pio/build/<env>/firmware.bin`.
+- **Update firmware**: `dexframe-<panel>-ota.bin` from the release, or `.pio/build/<env>/firmware.bin`.
+  The board refuses a file that is not DexFrame or is built for another panel (each image carries a
+  `DXFPANEL=<panel>;` marker), and one damaged on the way (the web UI sends its MD5, checked after writing).
 - **Update web UI**: pick the project's `data/www` folder; files are uploaded one by one (`index.html` last),
-  pages and saved data stay. Also the way to add your ribbon/trainer images without `uploadfs`.
+  text files gzipped in the browser, pages and saved data stay. Also the way to add your ribbon/trainer images without `uploadfs`.
 - **Key** (optional): when set, every change to the board (pages, settings, updates, Wi-Fi) needs it.
   Without it, anyone on your network can change or reflash the board.
 - **Wi-Fi**: scan and switch network from the *System* section (the board restarts and joins it).
@@ -100,10 +118,94 @@ works even with an empty file system):
   the firmware gets the date via NTP (or from the browser clock in AP mode) and updates the number at midnight.
   Time zone: *Display → Time zone*, POSIX format (default `CET-1CEST,M3.5.0,M10.5.0/3`, Italy).
 - **Pokémon of the day**: a pool of 1–14 random Pokémon (Gen 1–4 with the Platinum/HG-SS sprites, Gen 1–5 with B/W),
-  with genus, types and the Pokédex entry in the display language (PokeAPI). The board shows one per day, in turn,
-  as the last page of the rotation. *New draw* picks a new pool.
+  with genus, types and the Pokédex entry in the display language (PokeAPI), shown as the last page of the rotation.
+  In *Energy & updates* you choose when it changes (time of day, every N days) and whether each round of the
+  pool comes in a new random order; the board works the schedule out by itself and the UI lists the next changes.
+  *New draw* picks a new pool.
 - **Weaknesses**: type matchups (Gen 6+ chart) for the card's types: 4×, 2×, ½×, ¼×, 0×. Abilities such as
   Levitate are not taken into account.
+
+## More pages
+
+Off by default; turn them on in *Pages*.
+
+- **Countdown**: days left to a date, with a title of your choice. The board redraws the number every midnight
+  (same mechanism as the day counter) and stops at 0.
+- **Move details**: power, accuracy, PP and category of the four moves (PokeAPI). Move names can be typed in
+  any of the UI languages.
+- **IV/EV chart**: radar of the six stats with the EV spread, and a table with IVs and EVs
+  (*Stats → IVs / EVs*, `HP/Atk/Def/SpA/SpD/Spe`; filled in by the Showdown and PKHeX imports).
+- **Evolutions**: the evolution line of the Pokémon with how each stage evolves; other branches are counted (`+2`).
+- **Pokédex entry**: genus, height, weight, egg groups and the Pokédex text in the display language.
+- **Team and Hall of Fame on several pages**: *Pages → Pokémon per page* 3 or 2 splits the six Pokémon over
+  two or three pages with much larger sprites (exact 2× when they fit).
+
+## Games and trackers
+
+Also off by default, in *Pages*.
+
+- **Who's that Pokémon?**: a black silhouette, then (next page) the answer. A pool of 1–14 random Pokémon that
+  changes with the *of the day* schedule; the answer always follows its own silhouette.
+- **Shiny counter** (*Shiny hunt*): target Pokémon in its shiny sprite, encounters, the chance it should have
+  shown up by now for the chosen odds (1/4096, 1/8192, Shiny Charm, Masuda…), method and notes. The count lives
+  on the board: set the button's double click or long press to *Shiny counter +1* and count encounters with the
+  web UI closed; the number (and the chance) on screen update by themselves, with a partial refresh on B/W.
+  The web UI shows, adds, subtracts and sets it (`/api/counter`).
+- **Pokédex progress**: national or one generation, caught/total, a percentage bar and one square per
+  species. Caught numbers are typed as ranges (`1-151, 155`) and can include the collection, the card and the
+  team.
+- **Item of the day**: an item or a berry from PokeAPI with its icon, category, price or berry data and the
+  in-game text in the display language; a pool like the Pokémon of the day.
+
+## Split screen, your images, pushed pages
+
+- **Split screen** (*Split screen*): 2 side by side, 2 stacked or 4 boxes, each one a small widget: sprite,
+  days together, countdown, shiny counter, team, Pokédex progress, stats. The board keeps updating the
+  numbers of the days, countdown and shiny widgets by itself.
+- **Your images** (*Images*): pictures you add are cropped to 400×300, stored on the board (`/www/img/`,
+  about 30 KB each) and dithered (Floyd–Steinberg) to the panel's inks. The page shows a different one every
+  time it comes up, full screen, with an optional caption.
+- **Pushed pages**: `tools/push.py` sends a picture or a text from any computer or script; the board shows
+  it at once, for N minutes or until the next page change (`/api/push`). See
+  [docs/home-assistant.md](docs/home-assistant.md) for Home Assistant sensors, buttons and messages.
+
+## Pages: order, timing, style
+
+- *Pages* lists every page: tick it, move it with the arrows, and optionally give it its own **minutes on
+  screen** (empty = the general *Page change* time). The Pokémon of the day always closes the rotation.
+- **Quiet hours** (*Energy & updates*): no automatic page change between two times (or, with *At night: change
+  page every N minutes*, a slower pace); the button still works and the day counter still updates. With deep
+  sleep on, the board sleeps through them.
+- **Random order** (*Energy & updates*): the pages come in a new random order every round, and a round never
+  starts with the page the previous one ended on.
+- **Header style** (*Look*): classic black bar, bar in the accent ink (red on panels that have it), light,
+  a tab behind the name only, or an outlined bar.
+- **Frames** (*Look*): a border around the page, for all pages or a different one per page (*Pages*). Nine
+  geometric designs drawn in code (line, double, rounded, accent colour, dashed, retro chamfer, checker, studs,
+  wave), or **your own image**: upload any picture and it is used as a 9-slice frame (the border is a third of
+  its short side, corners stay, sides repeat; large images are reduced by a whole factor so the border is at most
+  8 px). The repository ships no frame images: the ones from the games are not ours to distribute, but you can
+  load your own. With a frame on, the page dots move up a few pixels.
+- **Screen upside down**: rotates everything by 180°, for a display mounted with the cable on the other side.
+- **Button**: a short press is always "next page"; a double click and a 1-second press can be set to
+  previous page, next page or a full refresh. With a double-click action set, a single click waits 0.45 s.
+- **Low battery threshold** and **full refresh every N counter updates** (B/W panel) are settings too.
+- **Download PNG** saves the page in the preview as a 400×300 image.
+- **Show on the display** puts the page in the preview on the e-paper now; the ▶ next to each page in
+  *Pages* does the same (`/api/show`). It needs the board to hold the pages listed in the UI.
+- *Send all pages* renders four pages at a time and skips the ones the board already holds
+  (`/api/pages` returns size and CRC-32 of each), so a small change uploads one page instead of all.
+  The new pages go to a staging copy and replace the old ones only at the end (when there is room for both),
+  so a send that stops halfway leaves the display as it was; the UI then waits for the screen to finish.
+
+## Colour
+
+![Portrait, moves and team on a black/white/red/yellow panel (preview)](docs/colour.png)
+
+On panels with yellow or more inks (build `bwry`), sprites are dithered between the panel's inks and type
+chips and move stripes take a colour by type. *Display → Preview colours* draws the preview for another
+panel (including a 6-colour one that has no firmware build yet) without changing what is sent: the frames
+always follow the connected display.
 
 ## Pickers: Pokémon, ribbons, badges, sprite style
 
@@ -131,9 +233,10 @@ Save the Pokémon in the editor as a card (*Collection → Save*), load it back 
 With *Put a portrait of every Pokémon in the collection in the rotation* each card adds its own portrait page
 (with its own day counter). Cards are part of the saved state and of the backup file.
 
-Pages live in LittleFS next to the web UI and your images: the firmware reports how many fit (`slotsFit`)
-and the UI refuses to send more. With a ~700 KB ribbon pack on the board about 15 pages fit; without it, 28.
-If you need more, keep the images on the PC (see *Driving the display from a PC*).
+Pages live in LittleFS next to the web UI and your images. They are compressed, so their size depends on
+the content (around 5 KB for a B/W page, more with large dithered sprites or a second colour). The firmware
+reports the room it has (`pageBudget`), the UI renders everything first and refuses to send what doesn't fit.
+The hard limit is 48 pages.
 
 ## PKHeX import (.pk4 – .pk9)
 
@@ -163,8 +266,14 @@ level, EVs, IVs (default 31) and nature. History and ribbons are left untouched.
 
 ## Battery and deep sleep
 
-With *Display → Power saving* on, the board stays online for *Minutes online* after power-on or a button press,
+*Energy & updates* shows the battery (voltage and an estimated charge for a 1S LiPo; *Read again* refreshes it)
+and gathers everything about timing: page change, full refresh, quiet hours, deep sleep, low-battery threshold
+and the Pokémon of the day schedule. *Save to the display* sends only these settings (`/api/settings`), without
+sending the pages again; *Refresh the screen now* does a full refresh of the page on screen.
+
+With *Power saving* on, the board stays online for *Minutes online* after power-on or a button press,
 then deep-sleeps: it wakes on a timer to change page (no WiFi), at midnight to update the day counter,
+at the change time of the Pokémon of the day when that page is on screen,
 once a day for an NTP resync, and on the GPIO33 button (which also brings the web UI back).
 Waking from deep sleep resets the panel controller, so in this mode the midnight update is a full refresh;
 partial refresh of the counter is used when the board stays powered (USB).
@@ -179,13 +288,15 @@ USB and button openings, hanging slot, and a desk stand (15° tilt). **Measure y
 
 ## Languages
 
-The web UI and the e-paper have **independent languages** (Italian and English included):
+The web UI and the e-paper have **independent languages** (Italian, English, Spanish, French and German):
 the switch at the top of the page sets the UI, *Display → Display language* sets what the panel shows
 (labels, page titles, type names, stock ribbon names). Free-text fields you type in (nature, ability, moves,
 characteristic) are shown as written. Data saved by older versions (Italian type names) is migrated automatically.
 
-To add a language, add a block to `LANGS`, `UI`, `DISP` and `TYPE_NAMES` in `data/www/index.html`
-(and optionally `RIBBON_NAMES`).
+To add a language: its name in `LANGS` (`web/js/05-i18n.js`), a block for `UI`, `DISP` and `TYPE_NAMES`
+(`web/js/07-i18n-langs.js`), its code in `LANGS` of `tools/build_pkx_data.py` (game texts for the pickers and
+the PKHeX import), then `python3 tools/build_ui.py`. The UI test fails if a language misses a key.
+The Silkscreen font covers Latin scripts only.
 
 ## Trainer card
 
@@ -215,8 +326,8 @@ restores it. Images from your own folders are not included, only which ones you 
 
 ## Driving the display from a PC (large image sets)
 
-Big image sets don't fit the ESP32 (a 1500-sprite trainer pack is ~2.8 MB; LittleFS has ~1.4 MB).
-The board doesn't need them: it only stores the rendered pages (30 KB each).
+Big image sets don't fit the ESP32 (a 1500-sprite trainer pack is ~2.8 MB; LittleFS has 960 KB).
+The board doesn't need them: it only stores the rendered pages (a few KB each).
 
 1. Build a single file with everything embedded:
    `python3 tools/make_standalone.py . --trainers ~/my-trainer-pack`
@@ -244,14 +355,20 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 
 | Method | Path | Body |
 |---|---|---|
-| GET | `/api/info` | → `{w,h,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy}` |
-| POST | `/api/frame?slot=N[&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–27), exactly 30000 bytes (2 × 15000-byte planes, MSB-first); `ov` = day-counter box |
+| GET | `/api/info` | → `{w,h,api,panel,panelName,palette,bpp,partial,pageBudget,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy,features,dailyAt,dailyEvery,dailyShuffle,dailyIndex,pools,order,quietInterval,pending,freeBytes,sleepOn,intervalMin,batLowMv,fullEvery,uptime,appSize,sketchSize}`; `pending` is true until the screen has finished drawing |
+| POST | `/api/frame?slot=N[&stage=1][&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = number boxes the board redraws by itself, up to 4 separated by `;`, each `x,y,w,h,align,day,color,sep[,mode,scale]`: `color` 0 black, 1 red, 2 yellow…; `mode` 0 days since `day`, 1 days until `day`, 2 the counter, 3 chance in % of a 1/`day` event after counter tries; `scale` 1–4 |
+| GET | `/api/pages` | → `[{slot,size,crc,ov}]` for the stored pages (CRC-32 of the file) |
 | POST | `/api/glyphs` | multipart file: digit strip for the day counter (`[gw,gh,n,adv[n],bitmaps]`) |
-| POST | `/api/rotation` | form: `count` (regular pages), `interval` (minutes, `0` = button only), `daily` (pool size, slots after the regular ones), `sleep` (0/1), `awake` (min), `tz` (POSIX), `now` (epoch s) |
-| POST | `/api/next` | show next page |
-| POST | `/api/show?slot=N` | show page N |
+| POST | `/api/rotation` | form: `pools` (one size per rotation entry: `1` a page, `7d` a pool of 7 that changes with the *of the day* schedule, `5v` a pool of 5 that moves on every time the entry comes up; slots are numbered across entries in order; older form: `count` + `daily`), `commit=1` (staged pages replace the live ones), `interval` (minutes, `0` = button only), `ord` (1 = random order per round), `qi` (minutes between pages during the quiet hours, 0 = none), `sleep` (0/1), `awake` (min), `qf`/`qt` (quiet hours, minutes of the day, -1 = off), `iv` (minutes per rotation entry, comma separated, 0 = default), `flip` (0/1), `dbl`/`lng` (button actions: 0 none, 1 next, 2 previous, 3 full refresh, 4 counter +1, 5 counter −1), `batlow` (mV), `fullevery`, `dat` (Pokémon of the day change time, minutes of the day), `dev` (every N days, 1–30), `dsh` (shuffle each round, 0/1), `tz` (POSIX), `now` (epoch s) |
+| POST | `/api/settings` | the same settings as `/api/rotation` (any subset, no `count`/`daily`): stored without touching the pages; the page on screen is redrawn only if it changes |
+| POST | `/api/refresh` | full refresh of the page on screen |
+| POST | `/api/next` / `/api/prev` | next / previous page of the rotation |
+| POST | `/api/push[?min=N][&ov=…]` | multipart DXF1 frame shown now, for N minutes (0 = until the next page change); `tools/push.py` makes one from a picture or a text |
+| POST | `/api/push/clear` | back to the rotation |
+| POST | `/api/counter?add=±N` or `?set=N` | the shiny counter (→ `{counter}`); the page on screen redraws if it shows it |
+| POST | `/api/show?slot=N` | show rotation entry N now (the Pokémon of the day is the last one) |
 | GET/POST | `/api/state` | card data JSON (≤64 KB) |
-| POST | `/api/ota` | multipart firmware `.bin` (app image), restarts when done |
+| POST | `/api/ota[?md5=…]` | multipart firmware `.bin` (app image) for this panel; optional MD5 checked after writing; restarts when done |
 | GET | `/api/fs[?dir=/www]` | → `[{path,size}]` |
 | POST | `/api/fs?path=/www/…` | multipart file, written below `/www/` only |
 | POST | `/api/fs/delete?path=/www/…` | delete a web UI file |
@@ -264,6 +381,65 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 
 When a key is set, every `POST` needs `?key=…`; `GET` requests stay open.
 
+## Panels
+
+One firmware build per panel; the web UI asks the board what it has (`/api/info`: size, inks, partial refresh)
+and renders for it.
+
+| Build | Panel | Inks | Notes |
+|---|---|---|---|
+| `bw` | 4.2" 400×300 `GDEY042T81` | black, white | fast partial refresh: the day counter updates without a flash |
+| `bwr` | 4.2" 400×300 `GDEY042Z98` | black, white, red | full refresh only (~16 s) |
+| `bwry` | 4.2" 400×300 `GDEY0420F51` | black, white, red, yellow | **experimental**: builds, not tested on hardware |
+| `spectra73` | 7.3" 800×480 `GDEP073E01` (Spectra 6) | black, white, red, yellow, blue, green | **experimental**: builds, not tested on hardware; full refresh only (~15 s); the 400×300 pages are scaled ×1.6 to fit (see below) |
+
+Adding a panel that [GxEPD2](https://github.com/ZinggJM/GxEPD2) supports is a block in `include/panel.h`
+(driver class, inks, partial refresh), an env in `platformio.ini` and an entry in the CI matrix
+(`.github/workflows/build.yml`). The page layouts are drawn for 400×300. A bigger panel gets them scaled up
+to fit and centred (nearest neighbour, so ×1.6 on 800×480 makes some pixels one wider than others); the
+number boxes move and grow with the page and the web UI draws them exactly as the board will. Panels smaller
+than 400×300 are refused: they need layouts of their own. The board draws big panels a band at a time
+(`PANEL_PAGES`), so the frame never has to fit in RAM.
+
+## Frame format
+
+A page is a `DXF1` file (`include/frame_codec.h` has the decoder, `encodeFrame()` in `web/js/` the encoder):
+
+- 12-byte header: `"DXF1"`, width and height (u16 little-endian), bits per pixel of literals (1–4), 3 zero bytes;
+- then tokens until width × height pixels are covered, row by row:
+  - `0cccllll` — run of ink `c`; `llll` + 1 pixels, or 16 + a LEB128 varint when `llll` is 15;
+  - `1nnnnnnn` — `n` + 1 literal pixels (128 + varint when `n` is 127), packed at bpp bits each, MSB first.
+
+Ink codes: 0 white, 1 black, 2 red, 3 yellow, 4 blue, 5 green, 6 orange. An ink the panel lacks is drawn black.
+The board checks the whole stream on upload and draws it run by run, without holding the frame in RAM.
+Raw two-plane pages from firmware 1.4.0 (30000 bytes) are still accepted on 400×300 panels.
+
+## Web UI sources
+
+`data/www/index.html` is generated: edit `web/` (`index.template.html`, `style.css`, `js/NN-name.js`) and run
+`python3 tools/build_ui.py`. On the board the text files are stored gzipped: `tools/stage_fs.py` makes the
+LittleFS folder (PlatformIO runs it before `buildfs`/`uploadfs`), and the web server sends `x.gz` for `x`. The script only joins the files in name order, with no bundler or minifier, so the
+file the board serves stays readable. CI fails if the generated file is not up to date.
+
+## Web installer
+
+`installer/index.html` plus `tools/build_installer.py` make a small site with
+[ESP Web Tools](https://esphome.github.io/esp-web-tools/): one manifest per panel pointing at the factory
+image, and the ESP Web Tools files copied next to the page (taken from the npm package at build time, nothing
+is loaded from a CDN). CI builds it on every run and publishes it to GitHub Pages when a `v*` tag is pushed;
+the repository needs *Settings → Pages → Source: GitHub Actions*.
+
+## Tests
+
+```bash
+python3 tests/test_codec.py    # web UI encoder against the firmware decoder (needs node, g++)
+python3 tests/test_daily.py    # Pokémon of the day: web UI schedule against the firmware (needs node, g++)
+python3 tests/test_rotation.py # rotation engine: pool list, slot numbering, shuffled order (needs g++)
+python3 tests/test_ui.py       # web UI against a fake board, every panel type (needs playwright + chromium)
+```
+
+All run in CI on every push, next to the firmware builds.
+
 ## Roadmap
 
 - [x] Single Pokémon card, rotating pages (incl. Trainer card, Hall of Fame, weaknesses)
@@ -271,7 +447,20 @@ When a key is set, every `POST` needs `?key=…`; `GET` requests stay open.
 - [x] Day counter updated by the board, Pokémon of the day
 - [x] Showdown import, deep sleep + battery, 3D-printable case
 - [x] PKHeX file import, setup portal, updates over Wi-Fi, ready-made binaries
-- [ ] Team view (6 slots, small menu icons)
+- [x] Team view
+- [x] Panel description from the firmware, compressed palette frames, one build per panel
+- [x] Page order and per-page timing, quiet hours, button actions, 180° screen, page styles
+- [x] Countdown, move details, IV/EV chart, evolutions, Pokédex entry, team on several pages
+- [x] Spanish, French, German
+- [x] Colour on the 4-ink panel (sprites and type colours quantised to the panel's inks), colour preview
+- [x] Web installer (flash from the browser)
+- [x] Page frames (built-in and your own 9-slice image), more header styles
+- [x] Energy & updates section, settings saved without sending pages, Pokémon of the day schedule
+- [x] 2.0: bigger app partition, verified OTA, rotation pools, random order, staged send, show a page now
+- [x] Who's that Pokémon?, shiny counter on the board's button, Pokédex progress, item of the day
+- [x] Split screen, your images, pages pushed from scripts and Home Assistant
+- [x] 7.3" 6-colour panel (firmware build, pages scaled to fit)
+- [ ] Layouts drawn for other sizes (2.9" and smaller, and native 800×480 instead of scaling)
 
 ## License
 

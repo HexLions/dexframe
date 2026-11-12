@@ -14,10 +14,13 @@
 #include <esp_sleep.h>
 #include <DNSServer.h>
 #include <Update.h>
+#include <esp_ota_ops.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <GxEPD2_BW.h>
-#include <GxEPD2_3C.h>
+#include "panel.h"
+#include "frame_codec.h"
+#include "daily_pick.h"
+#include "rotation.h"
 #include "dexframe_types.h"
 #include "setup_page.h"
 // Optional compile-time defaults; Wi-Fi is normally set from the setup page (stored in NVS).
@@ -33,7 +36,8 @@
 #ifndef DEVICE_HOSTNAME
 #define DEVICE_HOSTNAME "dexframe"
 #endif
-#define FW_VERSION "1.4.0"
+#define FW_VERSION "2.0.0"
+#define API_LEVEL 2      // 2: DXF1 frames, panel descriptor in /api/info
 #define AP_NAME "DexFrame-Setup"
 
 // ---- wiring (ESP32 DevKit, VSPI): SCK=18 MOSI=23 CS=5 DC=17 RST=16 BUSY=4 ----
@@ -50,21 +54,17 @@
 #define BAT_DIVIDER 2.0f
 #define BAT_LOW_MV  3500
 
-#if defined(EPD_BWR)
-GxEPD2_3C<GxEPD2_420c_GDEY042Z98, GxEPD2_420c_GDEY042Z98::HEIGHT>
-  display(GxEPD2_420c_GDEY042Z98(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
-static const bool HAS_RED = true;
-#else
-GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT>
-  display(GxEPD2_420_GDEY042T81(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
-static const bool HAS_RED = false;
-#endif
+PANEL_DRIVER<PANEL_CLASS, PANEL_CLASS::HEIGHT / PANEL_PAGES>
+  display(PANEL_CLASS(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
-constexpr int W = 400, H = 300;
-constexpr size_t PLANE = W * H / 8;      // 15000 bytes, 1 bit/px, MSB first
-constexpr size_t FRAME = PLANE * 2;      // black plane + red plane (red ignored on B/W)
+constexpr int W = PANEL_CLASS::WIDTH, H = PANEL_CLASS::HEIGHT;
+constexpr uint8_t FRAME_BPP = (PANEL_INKS > 0xF) ? 3 : (PANEL_INKS > 0x3) ? 2 : 1;
+const size_t FRAME_MAX = dxf::maxSize(W, H, 4);   // upload size cap
+// Pages stored by firmware <= 1.4.0: two raw 1-bit planes (black, then red), 400x300 only.
+constexpr size_t LEGACY_PLANE = (size_t)W * H / 8, LEGACY_FRAME = LEGACY_PLANE * 2;
+constexpr bool LEGACY_OK = LEGACY_FRAME <= 30000;
 constexpr size_t MAX_STATE = 64 * 1024;
-constexpr int MAX_SLOTS = 28;            // fits the 1.4 MB LittleFS next to the web UI
+constexpr int MAX_SLOTS = 48;            // hard cap; what really fits is in /api/info (pageBudget)
 constexpr int FULL_EVERY = 10;           // B/W: full refresh after this many partial ones
 const char* DEFAULT_TZ = "CET-1CEST,M3.5.0,M10.5.0/3";
 
@@ -73,22 +73,42 @@ DNSServer dns;
 Preferences prefs;
 
 // ---- configuration (NVS) ----
-int slotCount = 1;            // regular pages in rotation (slots 0..slotCount-1)
-int dailyCount = 0;           // "of the day" pool, slots slotCount..slotCount+dailyCount-1
+rot::Rotation rotCfg;         // entries and the pool of pages behind each (include/rotation.h)
+bool orderShuffle = false;    // rotation order: a new random order every round
+long shinyCount = 0;          // the board's counter (shiny hunt page), kept in NVS
+uint32_t quietIntervalMin = 0;   // page change during the quiet hours (0 = none)
 uint32_t intervalMin = 10;    // 0 = manual only (button / API)
 bool sleepEnabled = false;
+int quietFrom = -1, quietTo = -1;   // quiet hours, minutes of the day; -1 = off. No timed page change inside.
+String pageIntervals;               // minutes per rotation entry "5,30,0,…"; 0 or missing = intervalMin
+bool flipScreen = false;            // panel mounted upside down
+uint8_t actDouble = 0, actLong = 0; // button: 0 nothing, 1 next page, 2 previous page, 3 full refresh
+int batLowMv = BAT_LOW_MV;
+int fullEvery = FULL_EVERY;         // partial refreshes of the counter before a full one
 uint32_t awakeMin = 3;        // stay online this long after a button wake / power-on
+int dailyAt = 0;              // Pokémon of the day: change time, minutes after local midnight
+int dailyEvery = 1;           // ... every N days
+bool dailyShuffle = false;    // ... in a new random order on every round of the pool
 String tz = DEFAULT_TZ;
 String wifiSsid, wifiPass, hostName, adminKey;
 
 // ---- survives deep sleep ----
 RTC_DATA_ATTR int rtcEntry = 0;        // rotation entry on screen
+RTC_DATA_ATTR int rtcPos = 0;          // its position in the current round
+RTC_DATA_ATTR uint32_t rtcCycle = 0;   // rounds of the rotation so far (shuffle seed)
+RTC_DATA_ATTR uint16_t rtcViews[rot::MAX_ENTRIES];   // 'v' pools: times each entry came up
+// A page pushed from outside (/api/push: a script, Home Assistant, a dashboard) is kept
+// in slot PUSH_SLOT and shown instead of the rotation until it expires or the page changes.
+constexpr int PUSH_SLOT = MAX_SLOTS;
+RTC_DATA_ATTR bool rtcPush = false;
+RTC_DATA_ATTR time_t rtcPushUntil = 0;        // epoch; 0 = until the next page change
 RTC_DATA_ATTR int32_t rtcDrawnDay = -1;
+RTC_DATA_ATTR int32_t rtcDrawnDaily = -1;   // dailyIndex() when the daily page was drawn
 RTC_DATA_ATTR int rtcPartials = 0;
 RTC_DATA_ATTR time_t rtcLastSync = 0;
 RTC_DATA_ATTR time_t rtcPageDueAt = 0;   // epoch of the next page change while sleeping
 
-int current = 0;              // rotation entry: 0..slotCount-1, slotCount = daily page
+int current = 0;              // rotation entry on screen (0..entryCount()-1)
 uint32_t lastSwitch = 0, lastActivity = 0;
 volatile bool pendingDraw = false;
 bool pendingFull = true;
@@ -98,6 +118,13 @@ bool apActive = false;          // setup access point + captive DNS running
 uint32_t restartAt = 0;         // deferred restart (after the HTTP reply went out)
 bool otaOk = false;
 String otaErr;
+// Marker in the firmware image: an OTA upload must carry the one of this panel, so a
+// build for another panel (or a file that is not DexFrame) is refused.
+extern "C" __attribute__((used)) const char DEXFRAME_MARK[] = "DXFPANEL=" PANEL_ID ";";
+String otaTail;            // last bytes of the previous chunk: the marker may straddle two
+bool otaMarkFound = false, otaMarkOther = false;
+uint32_t apSince = 0;      // when the setup access point was started (millis)
+RTC_DATA_ATTR time_t rtcLastSyncTry = 0;   // last NTP attempt on a timer wake (success or not)
 
 bool lastBoot = HIGH, lastWake = HIGH;
 
@@ -131,23 +158,37 @@ void applyTz() { setenv("TZ", tz.c_str(), 1); tzset(); }
 // ---------------------------------------------------------------- storage
 String slotPath(int slot, const char* ext) { return "/f" + String(slot) + ext; }
 
-int entryCount() { return slotCount + (dailyCount > 0 ? 1 : 0); }
+int entryCount() { return rotCfg.n; }
+bool isScheduled(int entry) { return rotCfg.scheduled(entry); }
 
-// Rotation entry -> file slot. The daily entry picks one page of the pool per day.
-int entrySlot(int entry) {
-  if (entry < slotCount) return entry;
-  int32_t day = todayLocal();
-  int k = day >= 0 ? (int)(day % dailyCount) : 0;
-  return slotCount + k;
+// Number of the current "Pokémon of the day" period: days counted from the change
+// time (dailyAt), grouped by dailyEvery. -1 = clock not set.
+int32_t dailyIndex() {
+  if (!timeValid()) return -1;
+  time_t t = time(nullptr) - (time_t)dailyAt * 60;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  int32_t d = daysFromCivil(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+  return d >= 0 ? d / dailyEvery : -1;
 }
 
-Overlay readOverlay(int slot) {
+// Page of the pool behind an entry: by the "of the day" schedule, or by views.
+int poolPick(int entry) {
+  if (entry < 0 || entry >= rotCfg.n) return 0;
+  const rot::Pool& p = rotCfg.pools[entry];
+  if (p.size <= 1) return 0;
+  if (p.mode == 'v') return rtcViews[entry] % p.size;
+  return dailyPickOf(dailyIndex(), p.size, dailyShuffle);
+}
+
+// Rotation entry -> file slot (the pushed page while one is shown).
+int entrySlot(int entry) { return rtcPush ? PUSH_SLOT : rotCfg.base(entry) + poolPick(entry); }
+void endPush() { rtcPush = false; rtcPushUntil = 0; }
+
+Overlay parseOverlay(const String& s) {
   Overlay o{};
-  File f = LittleFS.open(slotPath(slot, ".ov"), "r");
-  if (!f) return o;
-  String s = f.readString(); f.close();
-  long v[8]; int n = 0, from = 0;
-  while (n < 8) {
+  long v[10]; int n = 0, from = 0;
+  while (n < 10) {
     int c = s.indexOf(',', from);
     v[n++] = s.substring(from, c < 0 ? s.length() : c).toInt();
     if (c < 0) break;
@@ -155,8 +196,34 @@ Overlay readOverlay(int slot) {
   }
   if (n < 7) return o;
   o = {(int)v[0], (int)v[1], (int)v[2], (int)v[3], (int)v[4], (int32_t)v[5], (int)v[6], n > 7 ? (int)v[7] : 0, true};
+  o.mode = n > 8 ? constrain((int)v[8], 0, 3) : 0;
+  o.scale = n > 9 ? constrain((int)v[9], 1, 4) : 1;
   o.ok = o.w > 0 && o.h > 0 && o.x >= 0 && o.y >= 0 && o.x + o.w <= W && o.y + o.h <= H;
   return o;
+}
+
+// All number boxes of a slot; returns how many are valid.
+int readOverlays(int slot, Overlay* out) {
+  File f = LittleFS.open(slotPath(slot, ".ov"), "r");
+  if (!f) return 0;
+  String s = f.readString(); f.close();
+  int n = 0, from = 0;
+  while (n < MAX_OVERLAYS && from <= (int)s.length()) {
+    int c = s.indexOf(';', from);
+    Overlay o = parseOverlay(s.substring(from, c < 0 ? s.length() : c));
+    if (o.ok) out[n++] = o;
+    if (c < 0) break;
+    from = c + 1;
+  }
+  return n;
+}
+
+// Does the page in this slot show something that changes with the date / the counter?
+bool slotHasOverlay(int slot, bool date) {
+  Overlay o[MAX_OVERLAYS];
+  int n = readOverlays(slot, o);
+  for (int i = 0; i < n; i++) if ((o[i].mode <= 1) == date) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------- glyphs
@@ -178,43 +245,54 @@ void loadGlyphs() {
   f.close();
 }
 
-inline void setPx(uint8_t* plane, int x, int y, bool on) {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  size_t i = (size_t)y * W + x;
-  if (on) plane[i >> 3] |= 0x80 >> (i & 7); else plane[i >> 3] &= ~(0x80 >> (i & 7));
+// Layout of the day count inside the overlay box (false = nothing to draw).
+bool layoutOverlay(const Overlay& o, OverlayRun& r) {
+  int32_t today = todayLocal();
+  if (!o.ok || !glyphs.bits || glyphs.n < 10) return false;
+  long value;
+  if (o.mode == 2) value = shinyCount;
+  else if (o.mode == 3) {
+    if (o.start < 2) return false;
+    value = (long)floor(100.0 * (1.0 - pow(1.0 - 1.0 / o.start, (double)shinyCount)));
+  } else {
+    if (today < 0) return false;
+    value = o.mode == 1 ? (long)o.start - today : (long)today - o.start;
+  }
+  if (value < 0) value = 0;
+  char digits[16];
+  snprintf(digits, sizeof digits, "%ld", value);
+  int len = strlen(digits);
+  r.k = 0;
+  for (int i = 0; i < len; i++) {
+    if (o.sep && glyphs.n > 10 && i > 0 && (len - i) % 3 == 0) r.idx[r.k++] = 10;
+    r.idx[r.k++] = digits[i] - '0';
+  }
+  if (o.mode == 3 && glyphs.n > 11) r.idx[r.k++] = 11;      // "%"
+  int total = 0;
+  for (int i = 0; i < r.k; i++) total += glyphs.adv[r.idx[i]] * o.scale;
+  r.x = o.align == 2 ? o.x + o.w - total : o.align == 1 ? o.x + (o.w - total) / 2 : o.x;
+  return true;
 }
 
-// Writes the day count into the frame buffer, inside the overlay box.
-bool renderOverlay(uint8_t* buf, const Overlay& o) {
-  int32_t today = todayLocal();
-  if (!o.ok || today < 0 || !glyphs.bits || glyphs.n < 10) return false;
-  long days = today - o.start;
-  if (days < 0) days = 0;
-  char digits[16];
-  snprintf(digits, sizeof digits, "%ld", days);
-  int idx[24], k = 0, len = strlen(digits);
-  for (int i = 0; i < len; i++) {
-    if (o.sep && glyphs.n > 10 && i > 0 && (len - i) % 3 == 0) idx[k++] = 10;
-    idx[k++] = digits[i] - '0';
-  }
-  int total = 0;
-  for (int i = 0; i < k; i++) total += glyphs.adv[idx[i]];
-  int x = o.align == 2 ? o.x + o.w - total : o.align == 1 ? o.x + (o.w - total) / 2 : o.x;
-  for (int yy = o.y; yy < o.y + o.h; yy++)              // clear the box
-    for (int xx = o.x; xx < o.x + o.w; xx++) { setPx(buf, xx, yy, false); setPx(buf + PLANE, xx, yy, false); }
-  uint8_t* plane = (o.color == 1 && HAS_RED) ? buf + PLANE : buf;
+// Draws the day count over the page, inside its box. Call between firstPage/nextPage.
+void paintOverlay(const Overlay& o, const OverlayRun& r) {
+  display.fillRect(o.x, o.y, o.w, o.h, GxEPD_WHITE);
+  uint16_t col = inkColor((uint8_t)(o.color + 1));     // overlay colour: 0 black, 1 red, ...
   size_t stride = (glyphs.gw + 7) / 8;
-  for (int i = 0; i < k; i++) {
-    const uint8_t* g = glyphs.bits + (size_t)idx[i] * glyphs.gh * stride;
-    for (int gy = 0; gy < glyphs.gh && o.y + gy < o.y + o.h; gy++)
+  int x = r.x;
+  for (int i = 0; i < r.k; i++) {
+    const uint8_t* g = glyphs.bits + (size_t)r.idx[i] * glyphs.gh * stride;
+    const int sc = o.scale;
+    for (int gy = 0; gy < glyphs.gh && gy * sc < o.h; gy++)
       for (int gx = 0; gx < glyphs.gw; gx++)
-        if (g[gy * stride + (gx >> 3)] & (0x80 >> (gx & 7))) {
-          int px = x - 2 + gx;                           // glyphs carry a 2 px left pad
-          if (px >= o.x && px < o.x + o.w) setPx(plane, px, o.y + gy, true);
-        }
-    x += glyphs.adv[idx[i]];
+        if (g[gy * stride + (gx >> 3)] & (0x80 >> (gx & 7)))
+          for (int dx = 0; dx < sc; dx++) {
+            int px = x + (gx - 2) * sc + dx;             // glyphs carry a 2 px left pad
+            if (px < o.x || px >= o.x + o.w) continue;
+            for (int dy = 0; dy < sc && gy * sc + dy < o.h; dy++) display.drawPixel(px, o.y + gy * sc + dy, col);
+          }
+    x += glyphs.adv[r.idx[i]] * sc;
   }
-  return true;
 }
 
 // ---------------------------------------------------------------- battery
@@ -229,37 +307,90 @@ int batteryMv() {
 }
 
 // Small low-battery mark, bottom-left corner (only when sensing is wired).
-void markLowBattery(uint8_t* buf) {
-  int mv = batteryMv();
-  if (mv < 1000 || mv > BAT_LOW_MV) return;   // <1 V = no battery connected
-  const int x0 = 4, y0 = 289;
-  for (int x = x0; x < x0 + 14; x++) { setPx(buf, x, y0, true); setPx(buf, x, y0 + 7, true); }
-  for (int y = y0; y < y0 + 8; y++) { setPx(buf, x0, y, true); setPx(buf, x0 + 13, y, true); }
-  for (int y = y0 + 2; y < y0 + 6; y++) { setPx(buf, x0 + 14, y, true); setPx(buf, x0 + 2, y, true); }
+void paintLowBattery() {
+  const int x0 = 4, y0 = H - 11;
+  display.drawRect(x0, y0, 14, 8, GxEPD_BLACK);
+  display.drawFastVLine(x0 + 14, y0 + 2, 4, GxEPD_BLACK);
+  display.drawFastVLine(x0 + 2, y0 + 2, 4, GxEPD_BLACK);
 }
 
 // ---------------------------------------------------------------- drawing
-// full=true: whole-screen refresh. full=false (B/W only): partial refresh of the
-// overlay box, used for the daily counter update without the full-screen flash.
+// Checks a stored/uploaded page: DXF1 for this panel's size with a complete pixel
+// stream, or (400x300 panels) a raw two-plane page from firmware <= 1.4.0.
+bool validFrame(File& f, bool& legacy) {
+  legacy = false;
+  size_t size = f.size();
+  uint8_t hdr[dxf::HEADER_SIZE];
+  f.seek(0);
+  dxf::Header h;
+  if (f.read(hdr, sizeof hdr) == sizeof hdr && dxf::parseHeader(hdr, sizeof hdr, h)) {
+    if (h.w != W || h.h != H || size > FRAME_MAX) return false;
+    return dxf::decode([&](uint8_t* b, size_t n) { return (size_t)f.read(b, n); },
+                       (uint32_t)W * H, h.bpp, [](uint8_t, uint32_t) {});
+  }
+  legacy = LEGACY_OK && size == LEGACY_FRAME;
+  return legacy;
+}
+
+// Streams a DXF1 page to the display, a run at a time (white is the cleared background).
+void paintFrame(File& f, uint8_t bpp) {
+  f.seek(dxf::HEADER_SIZE);
+  uint32_t pos = 0;
+  dxf::decode([&](uint8_t* b, size_t n) { return (size_t)f.read(b, n); }, (uint32_t)W * H, bpp,
+              [&](uint8_t ink, uint32_t n) {
+                if (ink) {
+                  uint16_t col = inkColor(ink);
+                  int x = pos % W, y = pos / W;
+                  for (uint32_t i = 0; i < n; i++) {
+                    display.drawPixel(x, y, col);
+                    if (++x == W) { x = 0; y++; }
+                  }
+                }
+                pos += n;
+              });
+}
+
+// full=true: whole-screen refresh. full=false (panels with a fast partial refresh):
+// only the counter box is refreshed, without the full-screen flash.
 bool drawEntry(int entry, bool full) {
   int slot = entrySlot(entry);
   File f = LittleFS.open(slotPath(slot, ".bin"), "r");
   if (!f) return false;
-  if (f.size() != FRAME) { f.close(); return false; }
-  uint8_t* buf = (uint8_t*)malloc(FRAME);
-  if (!buf) { f.close(); return false; }
-  size_t n = f.read(buf, FRAME);
-  f.close();
-  if (n != FRAME) { free(buf); return false; }
+  bool legacy = false;
+  uint8_t hdr[dxf::HEADER_SIZE];
+  dxf::Header h;
+  if (!(f.read(hdr, sizeof hdr) == sizeof hdr && dxf::parseHeader(hdr, sizeof hdr, h) && h.w == W && h.h == H)) {
+    legacy = LEGACY_OK && f.size() == LEGACY_FRAME;
+    if (!legacy) { f.close(); return false; }
+  }
+  uint8_t* planes = nullptr;
+  if (legacy) {
+    planes = (uint8_t*)malloc(LEGACY_FRAME);
+    f.seek(0);
+    if (!planes || f.read(planes, LEGACY_FRAME) != LEGACY_FRAME) { free(planes); f.close(); return false; }
+  }
 
-  Overlay ov = readOverlay(slot);
-  bool hasOv = renderOverlay(buf, ov);
-  markLowBattery(buf);
+  Overlay ov[MAX_OVERLAYS];
+  OverlayRun run[MAX_OVERLAYS];
+  bool lay[MAX_OVERLAYS];
+  int nOv = readOverlays(slot, ov);
+  bool hasOv = false;
+  int bx0 = W, by0 = H, bx1 = 0, by1 = 0;            // union of the boxes: the partial window
+  for (int i = 0; i < nOv; i++) {
+    lay[i] = layoutOverlay(ov[i], run[i]);
+    if (!lay[i]) continue;
+    hasOv = true;
+    bx0 = min(bx0, ov[i].x); by0 = min(by0, ov[i].y);
+    bx1 = max(bx1, ov[i].x + ov[i].w); by1 = max(by1, ov[i].y + ov[i].h);
+  }
+  int mv = batteryMv();
+  bool lowBat = mv >= 1000 && mv <= batLowMv;   // <1 V = no battery connected
 
-  bool partial = !full && !HAS_RED && hasOv && rtcPartials < FULL_EVERY;
+  bool partial = !full && PANEL_PARTIAL && hasOv && rtcPartials < fullEvery;
   busy = true;
+  display.setRotation(flipScreen ? 2 : 0);
   if (partial) {
-    display.setPartialWindow(ov.x & ~7, ov.y, ((ov.x + ov.w + 7) & ~7) - (ov.x & ~7), ov.h);
+    display.setPartialWindow(bx0 & ~7, by0, ((bx1 + 7) & ~7) - (bx0 & ~7), by1 - by0);
     rtcPartials++;
   } else {
     display.setFullWindow();
@@ -268,26 +399,114 @@ bool drawEntry(int entry, bool full) {
   display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
-    display.drawBitmap(0, 0, buf, W, H, GxEPD_BLACK);
-    if (HAS_RED) display.drawBitmap(0, 0, buf + PLANE, W, H, GxEPD_RED);
+    if (legacy) {
+      display.drawBitmap(0, 0, planes, W, H, GxEPD_BLACK);
+      if (panelHasInk(2)) display.drawBitmap(0, 0, planes + LEGACY_PLANE, W, H, GxEPD_RED);
+    } else {
+      paintFrame(f, h.bpp);
+    }
+    for (int i = 0; i < nOv; i++) if (lay[i]) paintOverlay(ov[i], run[i]);
+    if (lowBat) paintLowBattery();
   } while (display.nextPage());
   // hibernate loses the controller RAM (next update is a full refresh); powerOff keeps it,
   // so later partial refreshes of the counter are clean. Deep sleep always hibernates.
   if (sleepEnabled) display.hibernate(); else display.powerOff();
   busy = false;
-  free(buf);
+  free(planes);
+  f.close();
   rtcDrawnDay = todayLocal();
+  if (isScheduled(entry)) rtcDrawnDaily = dailyIndex();
   return true;
 }
 
-void goTo(int entry) {
-  int n = entryCount();
+void showEntry(int entry) {
+  endPush();
+  int n = max(1, entryCount());
   current = ((entry % n) + n) % n;
   rtcEntry = current;
   rtcPageDueAt = 0;
   lastSwitch = millis();
   pendingDraw = true;
   pendingFull = true;
+}
+
+// Jump to an entry: the round goes on from there.
+void goTo(int entry) {
+  int n = max(1, entryCount());
+  entry = ((entry % n) + n) % n;
+  for (int p = 0; p < n; p++)
+    if (rot::orderAt(rtcCycle, p, n, orderShuffle) == entry) { rtcPos = p; break; }
+  showEntry(entry);
+}
+
+// Next / previous stop of the rotation, in order or shuffled per round. A 'v' pool
+// moves to its next page every time it comes up this way.
+int stepEntry(int by) {
+  int n = max(1, entryCount());
+  rtcPos += by;
+  if (rtcPos >= n) { rtcPos = 0; rtcCycle++; }
+  if (rtcPos < 0) { rtcPos = n - 1; if (rtcCycle) rtcCycle--; }
+  int e = rot::orderAt(rtcCycle, rtcPos, n, orderShuffle);
+  if (by > 0 && e < rot::MAX_ENTRIES && rotCfg.pools[e].size > 1 && rotCfg.pools[e].mode == 'v') rtcViews[e]++;
+  return e;
+}
+void nextEntry(int by = 1) { showEntry(stepEntry(by)); }
+
+// ---------------------------------------------------------------- timing
+// Minutes this rotation entry stays on screen (0 = no timed change).
+uint32_t entryInterval(int entry) {
+  if (intervalMin == 0) return 0;
+  int from = 0;
+  for (int i = 0; from <= (int)pageIntervals.length(); i++) {
+    int c = pageIntervals.indexOf(',', from);
+    if (c < 0) c = pageIntervals.length();
+    if (i == entry) {
+      long v = pageIntervals.substring(from, c).toInt();
+      return v > 0 ? (uint32_t)min(v, 1440L) : intervalMin;
+    }
+    from = c + 1;
+  }
+  return intervalMin;
+}
+
+bool inQuiet(time_t t);
+// Minutes before the next page at time t: the page's own, or the night interval
+// during the quiet hours (0 = stay).
+uint32_t intervalAt(int entry, time_t t) { return inQuiet(t) ? (entryInterval(entry) ? quietIntervalMin : 0) : entryInterval(entry); }
+
+bool inQuiet(time_t t) {
+  if (quietFrom < 0 || quietTo < 0 || quietFrom == quietTo || t < 1700000000) return false;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  int m = lt.tm_hour * 60 + lt.tm_min;
+  return quietFrom < quietTo ? (m >= quietFrom && m < quietTo) : (m >= quietFrom || m < quietTo);
+}
+
+// First moment at or after t outside the quiet hours.
+time_t quietEnd(time_t t) {
+  if (!inQuiet(t)) return t;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  int m = lt.tm_hour * 60 + lt.tm_min;
+  return t + (time_t)((quietTo - m + 1440) % 1440) * 60 - lt.tm_sec;
+}
+
+// Counter of the shiny hunt page. Shown at once (partial refresh on B/W) when the page
+// on screen draws it; NVS writes are cheap enough for one press at a time.
+void setCounter(long v) {
+  shinyCount = constrain(v, 0L, 9999999L);
+  prefs.putLong("shiny", shinyCount);
+  if (slotHasOverlay(entrySlot(current), false) && !pendingDraw) { pendingDraw = true; pendingFull = false; }
+}
+
+// Button actions: 1 next page, 2 previous page, 3 full refresh of the current one,
+// 4 counter +1, 5 counter -1.
+void buttonAction(uint8_t a) {
+  if (a == 1) nextEntry(1);
+  else if (a == 2) nextEntry(-1);
+  else if (a == 3) { pendingDraw = true; pendingFull = true; rtcPartials = 0; }
+  else if (a == 4) setCounter(shinyCount + 1);
+  else if (a == 5) setCounter(shinyCount - 1);
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -322,6 +541,7 @@ void handleUpload() {
       uploadPath = "";
       if (!keyOk()) break;
       if (server.uri() == "/api/glyphs") uploadPath = "/glyphs";
+      else if (server.uri() == "/api/push") uploadPath = slotPath(PUSH_SLOT, "");
       else {
         int slot = server.hasArg("slot") ? server.arg("slot").toInt() : -1;
         if (slot < 0 || slot >= MAX_SLOTS) break;
@@ -332,11 +552,17 @@ void handleUpload() {
       break;
     }
     case UPLOAD_FILE_WRITE:
-      if (uploadOk && uploadFile.write(up.buf, up.currentSize) != up.currentSize) uploadOk = false;
+      if (uploadOk && (up.totalSize + up.currentSize > FRAME_MAX ||
+                       uploadFile.write(up.buf, up.currentSize) != up.currentSize)) uploadOk = false;
       break;
     case UPLOAD_FILE_END:
       if (uploadFile) uploadFile.close();
-      if (uploadPath.startsWith("/f") && up.totalSize != FRAME) uploadOk = false;
+      if (uploadOk && uploadPath.startsWith("/f")) {
+        File chk = LittleFS.open(uploadPath + ".tmp", "r");
+        bool legacy;
+        uploadOk = chk && validFrame(chk, legacy);
+        if (chk) chk.close();
+      }
       if (uploadPath == "/glyphs" && (up.totalSize < 3 || up.totalSize > 16384)) uploadOk = false;
       break;
     default:  // aborted
@@ -353,16 +579,46 @@ void handleFrameDone() {
     server.send(400, "text/plain", "bad frame");
     return;
   }
-  LittleFS.remove(uploadPath + ".bin");
-  LittleFS.rename(uploadPath + ".tmp", uploadPath + ".bin");
+  const bool stage = server.arg("stage") == "1";   // kept apart until /api/rotation?commit=1
+  const String dst = uploadPath + (stage ? ".new" : ".bin");
+  LittleFS.remove(dst);
+  LittleFS.rename(uploadPath + ".tmp", dst);
   int slot = server.arg("slot").toInt();
   if (server.hasArg("ov") && server.arg("ov").length()) {
-    File o = LittleFS.open(slotPath(slot, ".ov"), "w");
+    const String ov = server.arg("ov");
+    bool ok = ov.length() < 200;
+    for (size_t i = 0; ok && i < ov.length(); i++) ok = isdigit((unsigned char)ov[i]) || ov[i] == ',' || ov[i] == '-' || ov[i] == ';';
+    if (!ok) { server.send(400, "text/plain", "bad ov"); return; }
+    File o = LittleFS.open(slotPath(slot, stage ? ".ovn" : ".ov"), "w");
     if (o) { o.print(server.arg("ov")); o.close(); }
+  } else if (stage) {
+    File o = LittleFS.open(slotPath(slot, ".ovn"), "w");   // empty = no counter box
+    if (o) o.close();
   } else {
     LittleFS.remove(slotPath(slot, ".ov"));
   }
   server.send(204);
+}
+
+// POST /api/push[?min=N][&ov=…]  (multipart DXF1 frame): shown now, for N minutes
+// (0 or missing: until the next page change); then the rotation goes on.
+void handlePushDone() {
+  if (!authorized()) return;
+  if (!uploadOk) { LittleFS.remove(slotPath(PUSH_SLOT, ".tmp")); server.send(400, "text/plain", "bad frame"); return; }
+  LittleFS.remove(slotPath(PUSH_SLOT, ".bin"));
+  LittleFS.rename(slotPath(PUSH_SLOT, ".tmp"), slotPath(PUSH_SLOT, ".bin"));
+  const String ov = server.arg("ov");
+  bool ok = ov.length() < 200;
+  for (size_t i = 0; ok && i < ov.length(); i++) ok = isdigit((unsigned char)ov[i]) || ov[i] == ',' || ov[i] == '-' || ov[i] == ';';
+  LittleFS.remove(slotPath(PUSH_SLOT, ".ov"));
+  if (ok && ov.length()) { File o = LittleFS.open(slotPath(PUSH_SLOT, ".ov"), "w"); if (o) { o.print(ov); o.close(); } }
+  long mins = constrain(server.arg("min").toInt(), 0L, 7 * 24 * 60L);
+  rtcPush = true;
+  rtcPushUntil = mins && timeValid() ? time(nullptr) + mins * 60 : 0;
+  rtcPageDueAt = 0;
+  lastSwitch = millis();
+  pendingDraw = true; pendingFull = true;
+  server.send(202);
 }
 
 // POST /api/glyphs  (multipart file)
@@ -375,66 +631,215 @@ void handleGlyphsDone() {
   server.send(204);
 }
 
-// POST /api/rotation  count interval [daily sleep awake tz now]
-void handleRotation() {
-  touch();
-  if (!authorized()) return;
-  int count = server.arg("count").toInt();
-  long interval = server.arg("interval").toInt();
-  int daily = server.hasArg("daily") ? server.arg("daily").toInt() : 0;
-  if (count < 1 || daily < 0 || count + daily > MAX_SLOTS || interval < 0 || interval > 24 * 60) {
-    server.send(400, "text/plain", "bad rotation");
-    return;
+// Settings shared by /api/rotation and /api/settings; each one only when present.
+//   sleep awake tz now qf qt iv flip dbl lng batlow fullevery dat dev dsh
+void applySettings() {
+  if (server.hasArg("sleep")) { sleepEnabled = server.arg("sleep") == "1"; prefs.putBool("sleep", sleepEnabled); }
+  if (server.hasArg("awake")) { awakeMin = constrain(server.arg("awake").toInt(), 1, 60); prefs.putUInt("awake", awakeMin); }
+  if (server.hasArg("interval")) {
+    long interval = server.arg("interval").toInt();
+    if (interval >= 0 && interval <= 24 * 60) { intervalMin = (uint32_t)interval; prefs.putUInt("interval", intervalMin); }
   }
-  slotCount = count;
-  dailyCount = daily;
-  intervalMin = (uint32_t)interval;
-  if (server.hasArg("sleep")) sleepEnabled = server.arg("sleep") == "1";
-  if (server.hasArg("awake")) awakeMin = constrain(server.arg("awake").toInt(), 1, 60);
-  if (server.hasArg("tz") && server.arg("tz").length() && server.arg("tz").length() < 64) tz = server.arg("tz");
+  if (server.hasArg("tz") && server.arg("tz").length() && server.arg("tz").length() < 64) { tz = server.arg("tz"); prefs.putString("tz", tz); }
   if (server.hasArg("now")) {          // browser clock: works without NTP (e.g. AP mode)
     long long now = atoll(server.arg("now").c_str());
     if (now > 1700000000LL) { struct timeval tv = {(time_t)now, 0}; settimeofday(&tv, nullptr); }
   }
-  applyTz();
-  prefs.putInt("count", slotCount);
-  prefs.putInt("daily", dailyCount);
-  prefs.putUInt("interval", intervalMin);
-  prefs.putBool("sleep", sleepEnabled);
-  prefs.putUInt("awake", awakeMin);
-  prefs.putString("tz", tz);
-  for (int s = slotCount + dailyCount; s < MAX_SLOTS; s++) {   // drop pages no longer used
-    LittleFS.remove(slotPath(s, ".bin"));
-    LittleFS.remove(slotPath(s, ".ov"));
+  if (server.hasArg("qf") && server.hasArg("qt")) {
+    quietFrom = constrain(server.arg("qf").toInt(), -1, 1439);
+    quietTo = constrain(server.arg("qt").toInt(), -1, 1439);
+    prefs.putInt("qf", quietFrom); prefs.putInt("qt", quietTo);
   }
-  goTo(0);  // reply now, refresh in loop(): a B/W/R refresh takes ~16 s
+  if (server.hasArg("iv") && server.arg("iv").length() < 400) {
+    String iv = server.arg("iv");
+    bool ok = true;
+    for (size_t i = 0, run = 0; ok && i < iv.length(); i++) {   // digits and commas, at most 4 digits each
+      run = iv[i] == ',' ? 0 : run + 1;
+      ok = (isdigit((unsigned char)iv[i]) || iv[i] == ',') && run <= 4;
+    }
+    if (ok) { pageIntervals = iv; prefs.putString("ivs", pageIntervals); }
+  }
+  if (server.hasArg("flip")) { flipScreen = server.arg("flip") == "1"; prefs.putBool("flip", flipScreen); }
+  if (server.hasArg("dbl")) { actDouble = constrain(server.arg("dbl").toInt(), 0, 5); prefs.putUChar("dbl", actDouble); }
+  if (server.hasArg("lng")) { actLong = constrain(server.arg("lng").toInt(), 0, 5); prefs.putUChar("lng", actLong); }
+  if (server.hasArg("batlow")) { batLowMv = constrain(server.arg("batlow").toInt(), 3000, 4200); prefs.putInt("batlow", batLowMv); }
+  if (server.hasArg("fullevery")) { fullEvery = constrain(server.arg("fullevery").toInt(), 1, 100); prefs.putInt("fullevery", fullEvery); }
+  if (server.hasArg("dat")) { dailyAt = constrain(server.arg("dat").toInt(), 0, 1439); prefs.putInt("dat", dailyAt); }
+  if (server.hasArg("dev")) { dailyEvery = constrain(server.arg("dev").toInt(), 1, 30); prefs.putInt("dev", dailyEvery); }
+  if (server.hasArg("dsh")) { dailyShuffle = server.arg("dsh") == "1"; prefs.putBool("dsh", dailyShuffle); }
+  if (server.hasArg("ord")) { orderShuffle = server.arg("ord") == "1"; prefs.putBool("ord", orderShuffle); }
+  if (server.hasArg("qi")) { quietIntervalMin = constrain(server.arg("qi").toInt(), 0, 1440); prefs.putUInt("qi", quietIntervalMin); }
+  applyTz();
+}
+
+// POST /api/settings  any of the applySettings() fields: no pages change, the page on
+// screen stays (redrawn only if what it shows changes: rotation, daily pick).
+void handleSettings() {
+  touch();
+  if (!authorized()) return;
+  bool flipWas = flipScreen;
+  int32_t pickWas = entrySlot(current);
+  applySettings();
+  rtcPageDueAt = 0;                 // the timer restarts with the new interval
+  lastSwitch = millis();
+  if (flipWas != flipScreen || entrySlot(current) != pickWas) { pendingDraw = true; pendingFull = true; }
+  server.send(204);
+}
+
+// Rotation from the old "count" + "daily" pair (firmware <= 1.7, and its saved settings).
+String legacyPools(int count, int daily) {
+  String p;
+  for (int i = 0; i < count; i++) p += i ? ",1" : "1";
+  if (daily > 0) p += (p.length() ? "," : "") + String(daily) + (daily > 1 ? "d" : "");
+  return p;
+}
+
+// Staged upload (/api/frame?stage=1) -> live: each slot that has a staged page or
+// counter box takes it; slots past the rotation are dropped.
+void commitStaged(int total) {
+  for (int s = 0; s < MAX_SLOTS; s++) {
+    const String nb = slotPath(s, ".new"), no = slotPath(s, ".ovn");
+    if (s >= total) {
+      for (const char* e : {".bin", ".ov", ".new", ".ovn"}) LittleFS.remove(slotPath(s, e));
+      continue;
+    }
+    if (LittleFS.exists(nb)) { LittleFS.remove(slotPath(s, ".bin")); LittleFS.rename(nb, slotPath(s, ".bin")); }
+    if (LittleFS.exists(no)) {
+      File f = LittleFS.open(no, "r");
+      bool empty = !f || f.size() == 0;
+      if (f) f.close();
+      LittleFS.remove(slotPath(s, ".ov"));
+      if (empty) LittleFS.remove(no); else LittleFS.rename(no, slotPath(s, ".ov"));
+    }
+  }
+}
+
+// POST /api/rotation  pools (or count [daily]) [interval commit + applySettings() fields]
+void handleRotation() {
+  touch();
+  if (!authorized()) return;
+  long interval = server.hasArg("interval") ? server.arg("interval").toInt() : (long)intervalMin;
+  String spec = server.hasArg("pools") ? server.arg("pools")
+              : legacyPools(server.arg("count").toInt(), server.hasArg("daily") ? server.arg("daily").toInt() : 0);
+  rot::Rotation r;
+  if (spec.length() > 240 || !rot::parse(spec.c_str(), r, MAX_SLOTS) || interval < 0 || interval > 24 * 60) {
+    server.send(400, "text/plain", "bad rotation");
+    return;
+  }
+  rotCfg = r;
+  char buf[256];
+  rot::format(rotCfg, buf, sizeof buf);
+  prefs.putString("pools", buf);
+  applySettings();
+  intervalMin = (uint32_t)interval;
+  prefs.putUInt("interval", intervalMin);
+  if (server.arg("commit") == "1") commitStaged(rotCfg.totalSlots());
+  else
+    for (int s = rotCfg.totalSlots(); s < MAX_SLOTS; s++) {   // drop pages no longer used
+      LittleFS.remove(slotPath(s, ".bin"));
+      LittleFS.remove(slotPath(s, ".ov"));
+    }
+  memset(rtcViews, 0, sizeof rtcViews);
+  rtcCycle = 0;
+  goTo(rot::orderAt(0, 0, entryCount(), orderShuffle));  // reply now, refresh in loop(): a B/W/R refresh takes ~16 s
+  rtcPos = 0;
   server.send(202);
 }
 
-// How many pages fit in LittleFS next to the web UI and your images: each page
-// takes 8 blocks (30000 B) + 1 for its counter box, plus room for one .tmp upload.
-int slotsFit() {
-  const long per = 9 * 4096L;
-  long frames = 0;
+// Bytes available for pages: free space plus what the stored pages occupy now (they
+// get replaced), minus a reserve for the saved card data and file-system metadata.
+// Sizes count in 4096-byte blocks; each page also needs one block for its counter box.
+constexpr long FS_BLOCK = 4096;
+long pageBudget() {
+  long held = 0;
   File root = LittleFS.open("/");
   for (File f = root.openNextFile(); f; f = root.openNextFile()) {
     String n = f.name();
     if (n.startsWith("/")) n = n.substring(1);
-    if (n.startsWith("f") && n.endsWith(".bin")) frames++;
+    if (n.startsWith("f") && (n.endsWith(".bin") || n.endsWith(".ov")))
+      held += ((long)f.size() + FS_BLOCK - 1) / FS_BLOCK * FS_BLOCK;
   }
-  long avail = (long)LittleFS.totalBytes() - (long)LittleFS.usedBytes() + frames * per - 8 * 4096L - 4 * 4096L;
-  return constrain((int)(avail / per), 1, MAX_SLOTS);
+  long avail = (long)LittleFS.totalBytes() - (long)LittleFS.usedBytes() + held - 12 * FS_BLOCK;
+  return avail > 0 ? avail : 0;
 }
+
+// Pages that fit if none of them compresses (two bits per pixel, as before 1.5.0).
+int slotsFit() {
+  const long per = ((long)W * H / 4 + FS_BLOCK - 1) / FS_BLOCK * FS_BLOCK + FS_BLOCK;
+  return constrain((int)((pageBudget() - per) / per), 1, MAX_SLOTS);
+}
+
+String paletteJson() {
+  String j = "[";
+  for (uint8_t i = 0; i < dxf::INK_COUNT; i++)
+    if (panelHasInk(i)) { if (j.length() > 1) j += ','; j += '"'; j += INK_NAMES[i]; j += '"'; }
+  return j + "]";
+}
+
+// GET /api/pages -> [{slot,size,crc,ov}] for the pages in use: lets the web UI skip
+// uploading a page the board already has.
+void handlePages() {
+  touch();
+  String j = "[";
+  static uint8_t buf[1024];
+  for (int s = 0; s < rotCfg.totalSlots(); s++) {
+    File f = LittleFS.open(slotPath(s, ".bin"), "r");
+    if (!f) continue;
+    uint32_t crc = 0;
+    size_t n;
+    while ((n = f.read(buf, sizeof buf)) > 0) crc = dxf::crc32(crc, buf, n);
+    String ov;
+    File o = LittleFS.open(slotPath(s, ".ov"), "r");
+    if (o) { ov = o.readString(); o.close(); }
+    if (j.length() > 1) j += ',';
+    j += "{\"slot\":" + String(s) + ",\"size\":" + String(f.size()) + ",\"crc\":" + String(crc) +
+         ",\"ov\":\"" + jsonEscape(ov) + "\"}";
+    f.close();
+  }
+  server.send(200, "application/json", j + "]");
+}
+
+String poolsString() { char b[256]; rot::format(rotCfg, b, sizeof b); return b; }
+// For web UIs up to 1.7: plain pages, then the Pokémon of the day pool.
+int legacyDaily() { int n = rotCfg.n; return n && rotCfg.pools[n - 1].size > 1 ? rotCfg.pools[n - 1].size : 0; }
+int legacyCount() { return rotCfg.n - (legacyDaily() ? 1 : 0); }
+
+uint32_t sketchSize() { static uint32_t n = ESP.getSketchSize(); return n; }   // reads the image once
 
 void handleInfo() {
   touch();
   int mv = batteryMv();
   String j = "{\"w\":" + String(W) + ",\"h\":" + String(H) +
-             ",\"red\":" + (HAS_RED ? "true" : "false") +
+             ",\"red\":" + (panelHasInk(2) ? "true" : "false") +
+             ",\"api\":" + String(API_LEVEL) +
+             ",\"features\":\"pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh,pools,stage,prev,counter,overlays,push\"" +
+             ",\"dailyAt\":" + String(dailyAt) + ",\"dailyEvery\":" + String(dailyEvery) +
+             ",\"dailyShuffle\":" + (dailyShuffle ? "true" : "false") +
+             ",\"dailyIndex\":" + String(dailyIndex()) +
+             ",\"pools\":\"" + poolsString() + "\"" +
+             ",\"order\":\"" + (orderShuffle ? "shuffle" : "seq") + "\"" +
+             ",\"quietInterval\":" + String(quietIntervalMin) +
+             ",\"counter\":" + String(shinyCount) +
+             ",\"push\":" + (rtcPush ? "true" : "false") +
+             ",\"pushUntil\":" + String((long)rtcPushUntil) +
+             ",\"pending\":" + (pendingDraw || busy ? "true" : "false") +
+             ",\"freeBytes\":" + String((long)LittleFS.totalBytes() - (long)LittleFS.usedBytes()) +
+             ",\"sleepOn\":" + (sleepEnabled ? "true" : "false") +
+             ",\"intervalMin\":" + String(intervalMin) +
+             ",\"batLowMv\":" + String(batLowMv) + ",\"fullEvery\":" + String(fullEvery) +
+             ",\"uptime\":" + String(millis() / 1000) +
+             ",\"appSize\":" + String(esp_ota_get_running_partition() ? esp_ota_get_running_partition()->size : 0) +
+             ",\"sketchSize\":" + String(sketchSize()) +
+             ",\"panel\":\"" PANEL_ID "\"" +
+             ",\"panelName\":\"" PANEL_NAME "\"" +
+             ",\"palette\":" + paletteJson() +
+             ",\"bpp\":" + String(FRAME_BPP) +
+             ",\"partial\":" + (PANEL_PARTIAL ? "true" : "false") +
+             ",\"pageBudget\":" + String(pageBudget()) +
              ",\"maxSlots\":" + String(MAX_SLOTS) +
              ",\"slotsFit\":" + String(slotsFit()) +
-             ",\"count\":" + String(slotCount) +
-             ",\"daily\":" + String(dailyCount) +
+             ",\"count\":" + String(legacyCount()) +
+             ",\"daily\":" + String(legacyDaily()) +
              ",\"entries\":" + String(entryCount()) +
              ",\"current\":" + String(current) +
              ",\"interval\":" + String(intervalMin) +
@@ -489,10 +894,31 @@ void handleOtaUpload() {
     otaOk = keyOk();
     if (!otaOk) { otaErr = "key"; return; }
     Serial.printf("OTA: %s\n", up.filename.c_str());
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) { otaOk = false; otaErr = Update.errorString(); }
+    otaTail = ""; otaMarkFound = otaMarkOther = false;
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) { otaOk = false; otaErr = Update.errorString(); return; }
+    const String md5 = server.arg("md5");          // optional: checked by Update.end()
+    if (md5.length() == 32) Update.setMD5(md5.c_str());
   } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (otaOk) {
+      // look for the panel marker, also across the chunk boundary
+      String win = otaTail;
+      win.reserve(otaTail.length() + up.currentSize + 1);
+      for (size_t i = 0; i < up.currentSize; i++) win += up.buf[i] ? (char)up.buf[i] : '\x01';
+      int at = -1;
+      while ((at = win.indexOf("DXFPANEL=", at + 1)) >= 0) {
+        int end = win.indexOf(';', at);
+        if (end < 0) break;
+        if (win.substring(at + 9, end) == PANEL_ID) otaMarkFound = true; else otaMarkOther = true;
+      }
+      otaTail = win.length() > 32 ? win.substring(win.length() - 32) : win;
+    }
     if (otaOk && Update.write(up.buf, up.currentSize) != up.currentSize) { otaOk = false; otaErr = Update.errorString(); Update.abort(); }
   } else if (up.status == UPLOAD_FILE_END) {
+    if (otaOk && !otaMarkFound) {
+      otaOk = false;
+      otaErr = otaMarkOther ? "firmware for another panel (this one is " PANEL_ID ")" : "not a DexFrame firmware";
+      Update.abort();
+    }
     if (otaOk && !Update.end(true)) { otaOk = false; otaErr = Update.errorString(); }
   } else {
     if (otaOk) Update.abort();
@@ -501,7 +927,7 @@ void handleOtaUpload() {
 }
 
 void handleOtaDone() {
-  if (!otaOk) { server.send(otaErr == "key" ? 403 : 500, "text/plain", otaErr); return; }
+  if (!otaOk) { server.send(otaErr == "key" ? 403 : otaErr == "aborted" ? 500 : 400, "text/plain", otaErr); return; }
   server.send(200, "text/plain", "ok");
   restartAt = millis() + 800;
 }
@@ -522,7 +948,8 @@ void handleFsUpload() {
       uploadOk = (bool)uploadFile;
     }
   } else if (up.status == UPLOAD_FILE_WRITE) {
-    if (uploadOk && uploadFile.write(up.buf, up.currentSize) != up.currentSize) uploadOk = false;
+    if (uploadOk && (up.totalSize + up.currentSize > 512 * 1024 ||
+                     uploadFile.write(up.buf, up.currentSize) != up.currentSize)) uploadOk = false;
   } else if (up.status == UPLOAD_FILE_END) {
     if (uploadFile) uploadFile.close();
   } else {
@@ -540,7 +967,8 @@ void handleFsDone() {
     return;
   }
   LittleFS.remove(p);
-  if (p.endsWith(".json")) LittleFS.remove(p + ".gz");      // keep one copy of the pkx data
+  // one copy of each file: plain and gzipped versions replace each other
+  if (p.endsWith(".gz")) LittleFS.remove(p.substring(0, p.length() - 3)); else LittleFS.remove(p + ".gz");
   LittleFS.rename(p + ".tmp", p);
   server.send(204);
 }
@@ -558,7 +986,9 @@ void listDir(const String& dir, String& out) {
 
 void handleFsList() {
   String out = "[";
-  listDir(server.hasArg("dir") ? server.arg("dir") : "/www", out);
+  const String dir = server.hasArg("dir") ? server.arg("dir") : "/www";
+  if (dir != "/www" && !validWwwPath(dir)) { server.send(400, "text/plain", "bad dir"); return; }
+  listDir(dir, out);
   out += "]";
   server.send(200, "application/json", out);
 }
@@ -598,6 +1028,7 @@ void startAP() {
   dns.setErrorReplyCode(DNSReplyCode::NoError);
   dns.start(53, "*", WiFi.softAPIP());
   apActive = true;
+  apSince = millis();
   Serial.printf("Setup AP \"%s\": http://%s/setup\n", AP_NAME, WiFi.softAPIP().toString().c_str());
 }
 
@@ -612,6 +1043,7 @@ void stopAP() {
 // when the board is online but has no pages yet.
 void drawTextScreen(const char* const* big, int nBig, const char* const* small, int nSmall) {
   busy = true;
+  display.setRotation(flipScreen ? 2 : 0);
   display.setFullWindow();
   display.firstPage();
   do {
@@ -695,7 +1127,10 @@ void handleWifiSave() {
   if (ssid.isEmpty() || ssid.length() > 32 || server.arg("pass").length() > 64) { server.send(400, "text/plain", "ssid/pass"); return; }
   prefs.putString("ssid", ssid);
   prefs.putString("pass", server.arg("pass"));
-  if (host.length() && host.length() < 32) prefs.putString("host", host);
+  bool hostOk = host.length() > 0 && host.length() < 32 && host[0] != '-';
+  for (size_t i = 0; hostOk && i < host.length(); i++) hostOk = isalnum((unsigned char)host[i]) || host[i] == '-';
+  if (hostOk) prefs.putString("host", host);
+  else if (host.length()) { server.send(400, "text/plain", "host: letters, digits and -"); return; }
   server.send(200, "text/plain", "ok");
   restartAt = millis() + 800;
 }
@@ -726,8 +1161,21 @@ void handleTrainerFetch() {
   const int len = http.getSize();
   if (code != 200 || len > 65536) { http.end(); server.send(502, "text/plain", "HTTP " + String(code)); return; }
   File out = LittleFS.open(path + ".tmp", "w", true);
-  const int n = out ? http.writeToStream(&out) : -1;
-  if (out) out.close();
+  int n = out ? 0 : -1;
+  if (out) {     // bounded copy: a chunked reply has no length up front
+    WiFiClient* st = http.getStreamPtr();
+    uint8_t buf[512];
+    uint32_t t0 = millis();
+    while (http.connected() && (len < 0 || n < len) && millis() - t0 < 15000) {
+      size_t a = st->available();
+      if (!a) { delay(5); continue; }
+      int r = st->readBytes(buf, min(a, sizeof buf));
+      if (r <= 0) break;
+      if (n + r > 65536 || out.write(buf, r) != (size_t)r) { n = -1; break; }
+      n += r;
+    }
+    out.close();
+  }
   http.end();
   if (n <= 0 || (len > 0 && n != len)) { LittleFS.remove(path + ".tmp"); server.send(502, "text/plain", "download"); return; }
   LittleFS.rename(path + ".tmp", path);
@@ -747,7 +1195,7 @@ void factoryReset() {
     for (File f = sd.openNextFile(); f; f = sd.openNextFile()) gone.push_back(String(f.path()));
   for (const String& p : gone) LittleFS.remove(p);
   rtcDrawnDay = -1;
-  rtcEntry = 0;
+  rtcEntry = 0; rtcPos = 0; rtcCycle = 0;
 }
 
 void forgetNetwork() {
@@ -775,8 +1223,36 @@ void startServer() {
   server.on("/api/frame", HTTP_POST, handleFrameDone, handleUpload);
   server.on("/api/glyphs", HTTP_POST, handleGlyphsDone, handleUpload);
   server.on("/api/rotation", HTTP_POST, handleRotation);
-  server.on("/api/next", HTTP_POST, [] { touch(); if (authorized()) { goTo(current + 1); server.send(202); } });
-  server.on("/api/show", HTTP_POST, [] { touch(); if (authorized()) { goTo(server.arg("slot").toInt()); server.send(202); } });
+  server.on("/api/settings", HTTP_POST, handleSettings);
+  server.on("/api/refresh", HTTP_POST, [] {      // full refresh of the page on screen
+    touch();
+    if (!authorized()) return;
+    rtcPartials = 0; pendingDraw = true; pendingFull = true; server.send(202);
+  });
+  server.on("/api/next", HTTP_POST, [] { touch(); if (authorized()) { nextEntry(1); server.send(202); } });
+  server.on("/api/push", HTTP_POST, handlePushDone, handleUpload);
+  server.on("/api/push/clear", HTTP_POST, [] {
+    touch();
+    if (!authorized()) return;
+    if (rtcPush) { endPush(); pendingDraw = true; pendingFull = true; }
+    server.send(202);
+  });
+  server.on("/api/counter", HTTP_POST, [] {      // ?add=±N or ?set=N
+    touch();
+    if (!authorized()) return;
+    if (server.hasArg("set")) setCounter(server.arg("set").toInt());
+    else if (server.hasArg("add")) setCounter(shinyCount + constrain(server.arg("add").toInt(), -1000L, 1000L));
+    server.send(200, "application/json", "{\"counter\":" + String(shinyCount) + "}");
+  });
+  server.on("/api/prev", HTTP_POST, [] { touch(); if (authorized()) { nextEntry(-1); server.send(202); } });
+  server.on("/api/show", HTTP_POST, [] {
+    touch();
+    if (!authorized()) return;
+    int e = server.arg("slot").toInt();
+    if (e < 0 || e >= entryCount()) { server.send(400, "text/plain", "no such entry"); return; }
+    goTo(e);
+    server.send(202);
+  });
   server.on("/api/ota", HTTP_POST, handleOtaDone, handleOtaUpload);
   server.on("/api/fs", HTTP_GET, handleFsList);
   server.on("/api/fs", HTTP_POST, handleFsDone, handleFsUpload);
@@ -800,6 +1276,7 @@ void startServer() {
     server.send(204);
   });
   server.on("/api/trainer", HTTP_POST, handleTrainerFetch);
+  server.on("/api/pages", HTTP_GET, handlePages);
   server.on("/api/reset", HTTP_POST, [] {
     touch();
     if (!authorized()) return;
@@ -832,18 +1309,26 @@ void startServer() {
 // page on screen carries a day counter (whichever comes first).
 uint64_t secondsToNextWake() {
   uint64_t s = 0;
-  if (intervalMin > 0 && entryCount() > 1) {
+  if (rtcPush && rtcPushUntil) {                       // a pushed page with an end time: wake then
     time_t now = time(nullptr);
-    if (rtcPageDueAt <= now) rtcPageDueAt = now + intervalMin * 60;
-    s = rtcPageDueAt - now;
+    return rtcPushUntil > now ? (uint64_t)(rtcPushUntil - now) + 5 : 1;
   }
-  // midnight: the counter changes, and so does the Pokémon of the day
-  if ((readOverlay(entrySlot(current)).ok || current >= slotCount) && timeValid()) {
+  uint32_t iv = entryInterval(current);
+  if (iv > 0 && entryCount() > 1) {
+    time_t now = time(nullptr);
+    if (rtcPageDueAt <= now) rtcPageDueAt = now + (uint32_t)(inQuiet(now) && quietIntervalMin ? quietIntervalMin : iv) * 60;
+    if (!quietIntervalMin) rtcPageDueAt = quietEnd(rtcPageDueAt);   // no page change during the quiet hours
+    s = rtcPageDueAt > now ? rtcPageDueAt - now : 1;
+  }
+  // midnight: the counter changes; the Pokémon of the day changes at its own time
+  if (timeValid()) {
     time_t now = time(nullptr);
     struct tm lt;
     localtime_r(&now, &lt);
-    uint64_t toMidnight = (uint64_t)(24 * 3600 - (lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec)) + 60;
-    if (s == 0 || toMidnight < s) s = toMidnight;
+    long secOfDay = lt.tm_hour * 3600L + lt.tm_min * 60L + lt.tm_sec;
+    auto until = [&](long at) -> uint64_t { long d = at - secOfDay; if (d <= 0) d += 24 * 3600L; return (uint64_t)d + 60; };
+    if (slotHasOverlay(entrySlot(current), true)) { uint64_t m = until(0); if (s == 0 || m < s) s = m; }
+    if (isScheduled(current)) { uint64_t m = until(dailyAt * 60L); if (s == 0 || m < s) s = m; }
   }
   return s;   // 0 = no timer, button only
 }
@@ -864,12 +1349,30 @@ void goToSleep() {
 // ---------------------------------------------------------------- main
 void loadConfig() {
   prefs.begin("dexframe", false);
-  slotCount = constrain(prefs.getInt("count", 1), 1, MAX_SLOTS);
-  dailyCount = constrain(prefs.getInt("daily", 0), 0, MAX_SLOTS - slotCount);
-  intervalMin = prefs.getUInt("interval", 10);
+  String spec = prefs.getString("pools", "");
+  if (!spec.length()) {                              // settings saved by firmware <= 1.7
+    int count = constrain(prefs.getInt("count", 1), 1, MAX_SLOTS);
+    spec = legacyPools(count, constrain(prefs.getInt("daily", 0), 0, MAX_SLOTS - count));
+  }
+  if (!rot::parse(spec.c_str(), rotCfg, MAX_SLOTS)) rot::parse("1", rotCfg, MAX_SLOTS);
+  orderShuffle = prefs.getBool("ord", false);
+  quietIntervalMin = constrain(prefs.getUInt("qi", 0), 0u, 1440u);
+  intervalMin = min(prefs.getUInt("interval", 10), 24u * 60);
   sleepEnabled = prefs.getBool("sleep", false);
-  awakeMin = prefs.getUInt("awake", 3);
+  awakeMin = constrain(prefs.getUInt("awake", 3), 1u, 60u);
   tz = prefs.getString("tz", DEFAULT_TZ);
+  quietFrom = constrain(prefs.getInt("qf", -1), -1, 1439);
+  quietTo = constrain(prefs.getInt("qt", -1), -1, 1439);
+  pageIntervals = prefs.getString("ivs", "");
+  flipScreen = prefs.getBool("flip", false);
+  actDouble = min<uint8_t>(prefs.getUChar("dbl", 0), 5);
+  actLong = min<uint8_t>(prefs.getUChar("lng", 0), 5);
+  shinyCount = constrain(prefs.getLong("shiny", 0), 0L, 9999999L);
+  batLowMv = constrain(prefs.getInt("batlow", BAT_LOW_MV), 3000, 4200);
+  fullEvery = constrain(prefs.getInt("fullevery", FULL_EVERY), 1, 100);
+  dailyAt = constrain(prefs.getInt("dat", 0), 0, 1439);
+  dailyEvery = constrain(prefs.getInt("dev", 1), 1, 30);
+  dailyShuffle = prefs.getBool("dsh", false);
   wifiSsid = prefs.getString("ssid", WIFI_SSID);
   wifiPass = prefs.getString("pass", WIFI_PASS);
   hostName = prefs.getString("host", DEVICE_HOSTNAME);
@@ -879,41 +1382,57 @@ void loadConfig() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.printf("\nDexFrame %s (%s)\n", FW_VERSION, DEXFRAME_MARK);
   rtc_gpio_deinit((gpio_num_t)BTN_WAKE);   // back to a normal GPIO after an ext0 wake
   pinMode(BTN_BOOT, INPUT_PULLUP);
   pinMode(BTN_WAKE, INPUT_PULLUP);
   lastBoot = digitalRead(BTN_BOOT);
   lastWake = digitalRead(BTN_WAKE);         // a button still held after waking is not a new press
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
+  for (int s = 0; s < MAX_SLOTS; s++)                // a send that stopped halfway: drop it
+    for (const char* e : {".new", ".ovn", ".tmp"}) if (LittleFS.exists(slotPath(s, e))) LittleFS.remove(slotPath(s, e));
   loadConfig();
   loadGlyphs();
   display.init(115200, true, 2, false);
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   current = rtcEntry < entryCount() ? rtcEntry : 0;
+  if (rtcPos >= entryCount()) rtcPos = 0;
 
   if (sleepEnabled && cause == ESP_SLEEP_WAKEUP_TIMER) {
     // Quiet wake: no WiFi, unless the clock needs a daily NTP resync.
-    if (!timeValid() || time(nullptr) - rtcLastSync > 24 * 3600) {
+    // a failed attempt is not retried for 6 hours (no 8 s of Wi-Fi on every wake)
+    if (!timeValid() || (time(nullptr) - rtcLastSync > 24 * 3600 && time(nullptr) - rtcLastSyncTry > 6 * 3600)) {
+      rtcLastSyncTry = time(nullptr);
       if (connectWifi(8000)) syncTime();
       WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
     }
     // The RTC keeps system time across deep sleep: the interval elapsed -> next page,
     // otherwise this is the midnight wake that only updates the day counter.
-    bool pageDue = intervalMin > 0 && entryCount() > 1 && time(nullptr) + 30 >= rtcPageDueAt;
-    if (pageDue) {
-      current = (current + 1) % entryCount();
+    bool pageDue = entryInterval(current) > 0 && entryCount() > 1 && time(nullptr) + 30 >= rtcPageDueAt &&
+                   (!inQuiet(time(nullptr) + 30) || quietIntervalMin) && !(rtcPush && rtcPushUntil);
+    if (rtcPush && rtcPushUntil && time(nullptr) + 30 >= rtcPushUntil) {
+      endPush();                   // the pushed page is over: back to the rotation
+      drawEntry(current, true);
+    } else if (pageDue) {
+      endPush();
+      current = stepEntry(1);
       rtcEntry = current;
       rtcPageDueAt = 0;
       drawEntry(current, true);
-    } else {
+    } else if (isScheduled(current) && dailyIndex() != rtcDrawnDaily) {
+      drawEntry(current, true);    // a new Pokémon of the day
+    } else if (todayLocal() != rtcDrawnDay && slotHasOverlay(entrySlot(current), true)) {
       drawEntry(current, false);   // same page, refresh the day counter
+    } else {
+      rtcDrawnDay = todayLocal();  // nothing on screen changes
     }
     goToSleep();
   }
 
   if (cause == ESP_SLEEP_WAKEUP_EXT0) {   // button: next page right away, then go online
-    current = (current + 1) % entryCount();
+    endPush();
+    current = stepEntry(1);
     rtcEntry = current;
     pendingDraw = true;
   } else if (cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
@@ -937,6 +1456,14 @@ void loop() {
     if (MDNS.begin(hostName.c_str())) MDNS.addService("http", "tcp", 80);
   }
 
+  // Power saving with a saved network that is down: the access point would keep the
+  // board awake (and the battery draining). After 10 minutes, give up until next wake.
+  if (apActive && sleepEnabled && !wifiSsid.isEmpty() && millis() - apSince > 10 * 60000UL &&
+      millis() - lastActivity > 2 * 60000UL) {
+    stopAP();
+    WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
+  }
+
   // A button held 8 s: forget Wi-Fi and the admin key, restart into setup mode.
   static uint32_t bootDownSince = 0;
   if (digitalRead(BTN_BOOT) == LOW || digitalRead(BTN_WAKE) == LOW) {
@@ -945,28 +1472,43 @@ void loop() {
   } else bootDownSince = 0;
 
   // Buttons: BOOT (GPIO0) and the external one (GPIO33), active low, debounced.
-  static uint32_t lastBtnMs = 0;
+  static uint32_t lastBtnMs = 0, pressedAt = 0, clickAt = 0;
   bool b0 = digitalRead(BTN_BOOT), b1 = digitalRead(BTN_WAKE);
   if ((b0 != lastBoot || b1 != lastWake) && millis() - lastBtnMs > 50) {
     lastBtnMs = millis();
     bool pressed = (b0 == LOW && lastBoot == HIGH) || (b1 == LOW && lastWake == HIGH);
+    bool released = (b0 == HIGH && lastBoot == LOW) || (b1 == HIGH && lastWake == LOW);
     lastBoot = b0; lastWake = b1;
-    if (pressed && !busy) { touch(); goTo(current + 1); }
+    if (pressed) { pressedAt = millis(); touch(); }
+    // The action runs on release: short press = next page (or a double click, when one
+    // is configured), a press held for a second = the long-press action.
+    if (released && pressedAt && !busy) {
+      uint32_t held = millis() - pressedAt;
+      pressedAt = 0;
+      if (held >= 900 && actLong) { clickAt = 0; buttonAction(actLong); }
+      else if (!actDouble) buttonAction(1);
+      else if (clickAt && millis() - clickAt < 450) { clickAt = 0; buttonAction(actDouble); }
+      else clickAt = millis();
+    }
   }
+  if (clickAt && millis() - clickAt >= 450) { clickAt = 0; buttonAction(1); }   // no second click came
 
-  if (intervalMin > 0 && entryCount() > 1 && millis() - lastSwitch >= intervalMin * 60000UL) {
-    goTo(current + 1);
-  }
+  if (rtcPush && rtcPushUntil && time(nullptr) >= rtcPushUntil) { endPush(); pendingDraw = true; pendingFull = true; }
+  uint32_t iv = intervalAt(current, time(nullptr));
+  if (iv > 0 && (entryCount() > 1 || rtcPush) && !(rtcPush && rtcPushUntil) && millis() - lastSwitch >= iv * 60000UL) nextEntry(1);
 
   // New day: refresh the counter on the page shown (partial on B/W).
   static uint32_t lastDayCheck = 0;
   if (millis() - lastDayCheck > 30000) {
     lastDayCheck = millis();
     int32_t today = todayLocal();
-    if (today >= 0 && today != rtcDrawnDay && !pendingDraw && !busy) {
-      pendingDraw = true;
-      // the daily page changes Pokémon at midnight -> full refresh; counters -> partial
-      pendingFull = current >= slotCount;
+    if (today >= 0 && !pendingDraw && !busy) {
+      if (isScheduled(current) && dailyIndex() != rtcDrawnDaily) {
+        pendingDraw = true; pendingFull = true;          // a new Pokémon of the day
+      } else if (today != rtcDrawnDay) {
+        if (slotHasOverlay(entrySlot(current), true)) { pendingDraw = true; pendingFull = false; }   // counter: partial on B/W
+        else rtcDrawnDay = today;                        // nothing on this page depends on the date
+      }
     }
   }
 

@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""End-to-end check of the web UI against a fake board, one run per panel type.
+
+Opens data/www/index.html in headless Chromium, answers the /api/* calls like the
+firmware would, presses "Send all pages" and checks every frame that arrives:
+right format for the firmware, decodable by the firmware decoder, only inks the
+panel has, and a day counter the board can redraw pixel for pixel.
+
+  pip install playwright && playwright install chromium
+  python3 tests/test_ui.py            (CHROME=/path/to/chrome to use an installed browser)
+
+No network needed: requests to other hosts are blocked, every image is a made-up sprite.
+"""
+import asyncio
+import datetime
+import json
+import math
+import os
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from playwright.async_api import async_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+W, H = 400, 300
+INKS = ['white', 'black', 'red', 'yellow', 'blue', 'green', 'orange']
+PANELS = [  # id, palette, firmware: '2.0' (pools, staged send), '1.7', None = 1.4.0 (raw two-plane pages)
+    ('bw', ['white', 'black'], '2.0'),
+    ('bwr', ['white', 'black', 'red'], '2.0'),
+    ('bwry', ['white', 'black', 'red', 'yellow'], '2.0'),
+    ('spectra73', ['white', 'black', 'red', 'yellow', 'blue', 'green'], '2.0'),
+    ('bwr', ['white', 'black', 'red'], '1.7'),
+    ('bwr', ['white', 'black', 'red'], None),
+]
+FEATURES = {'1.7': 'pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh',
+            '2.0': 'pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh,pools,stage,prev,counter,overlays'}
+
+
+def fake_sprite(size=64):
+    """A shaded ball with an outline and a red patch, as a PNG: stands in for every sprite."""
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)
+        for x in range(size):
+            d = ((x - size / 2) ** 2 + (y - size / 2) ** 2) ** 0.5
+            if d > size * 0.42:
+                rows += bytes(4)
+            elif d > size * 0.38:
+                rows += bytes((20, 20, 30, 255))
+            elif x > size * 0.55 and y > size * 0.55:
+                rows += bytes((220, 40, 40, 255))
+            else:
+                v = 90 + int(150 * (1 - d / (size * 0.4)))
+                rows += bytes((v // 2, v, min(255, v + 20), 255))
+    chunk = lambda kind, data: struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0)) +
+            chunk(b'IDAT', zlib.compress(bytes(rows))) + chunk(b'IEND', b''))
+
+
+SPRITE = fake_sprite()
+
+
+def file_part(req):
+    boundary = re.search(r'boundary=(.+)', req.headers.get('content-type', '')).group(1).encode()
+    part = req.post_data_buffer.split(b'--' + boundary)[1]
+    return part.split(b'\r\n\r\n', 1)[1].rsplit(b'\r\n', 1)[0]
+
+
+def paint_overlays(px, ovs, g, today, counter, pw=W):
+    """All the boxes of a slot (';'-separated), as the board draws them."""
+    for ov in ovs.split(';'):
+        px = paint_overlay(px, ov, g, today, counter, pw)
+    return px
+
+
+def paint_overlay(px, ov, g, today, counter=0, pw=W):
+    """Mirror of layoutOverlay() + paintOverlay() in src/main.cpp."""
+    v = list(map(int, ov.split(',')))
+    x0, y0, w, h, align, start, color, sep = v[:8]
+    mode, sc = (v[8] if len(v) > 8 else 0), (min(4, max(1, v[9])) if len(v) > 9 else 1)
+    gw, gh, n = g[0], g[1], g[2]
+    adv, bits, stride = g[3:3 + n], g[3 + n:], (g[0] + 7) // 8
+    if mode == 2:
+        value = counter
+    elif mode == 3:
+        value = math.floor(100 * (1 - (1 - 1 / start) ** counter))
+    else:
+        value = start - today if mode == 1 else today - start
+    digits, idx = str(max(0, value)), []
+    for i, c in enumerate(digits):
+        if sep and n > 10 and i > 0 and (len(digits) - i) % 3 == 0:
+            idx.append(10)
+        idx.append(int(c))
+    if mode == 3 and n > 11:
+        idx.append(11)
+    total = sum(adv[i] * sc for i in idx)
+    x = x0 + w - total if align == 2 else x0 + (w - total) // 2 if align == 1 else x0
+    out = bytearray(px)
+    for yy in range(y0, y0 + h):
+        out[yy * pw + x0:yy * pw + x0 + w] = bytes(w)
+    for k in idx:
+        glyph = bits[k * gh * stride:(k + 1) * gh * stride]
+        for gy in range(gh):
+            for gx in range(gw):
+                if glyph[gy * stride + (gx >> 3)] & (0x80 >> (gx & 7)):
+                    for dx in range(sc):
+                        p = x + (gx - 2) * sc + dx
+                        if not x0 <= p < x0 + w:
+                            continue
+                        for dy in range(sc):
+                            if gy * sc + dy < h:
+                                out[(y0 + gy * sc + dy) * pw + p] = color + 1
+        x += adv[k] * sc
+    return bytes(out)
+
+
+async def run_panel(browser, decoder, tmp, pid, palette, api):
+    fw = api
+    api = 2 if fw else None
+    dev = {'frames': {}, 'staged': {}, 'glyphs': None, 'rotation': None}
+    pw, ph = (800, 480) if pid == 'spectra73' else (W, H)
+    info = {'w': pw, 'h': ph, 'red': 'red' in palette, 'maxSlots': 48, 'slotsFit': 28, 'count': 1, 'daily': 0,
+            'entries': 1, 'current': 0, 'interval': 10, 'batteryMv': 3912, 'busy': False}
+    if api:
+        info.update(api=api, panel=pid, palette=palette, bpp=2 if len(palette) > 2 else 1, pageBudget=1_000_000,
+                    features=FEATURES[fw], freeBytes=600_000, pending=False, counter=777)
+    uploads = []
+
+    async def device(route):
+        req, u = route.request, urlparse(route.request.url)
+        q, cors = parse_qs(u.query), {'Access-Control-Allow-Origin': '*'}
+        if u.path == '/api/info':
+            return await route.fulfill(status=200, headers=cors, content_type='application/json', body=json.dumps(info))
+        if u.path == '/api/state':
+            return await route.fulfill(status=200 if req.method == 'GET' else 204, headers=cors, content_type='application/json', body='{}')
+        if u.path == '/api/glyphs':
+            dev['glyphs'] = file_part(req)
+            return await route.fulfill(status=204, headers=cors)
+        if u.path == '/api/pages' and api:
+            pages = [{'slot': k, 'size': len(f), 'crc': zlib.crc32(f), 'ov': ov or ''} for k, (f, ov) in dev['frames'].items()]
+            return await route.fulfill(status=200, headers=cors, content_type='application/json', body=json.dumps(pages))
+        if u.path == '/api/frame':
+            uploads.append(int(q['slot'][0]))
+            dev['staged' if q.get('stage') == ['1'] else 'frames'][int(q['slot'][0])] = (file_part(req), q.get('ov', [None])[0])
+            return await route.fulfill(status=204, headers=cors)
+        if u.path == '/api/rotation':
+            dev['rotation'] = req.post_data
+            rq = parse_qs(req.post_data)
+            if 'pools' in rq:          # 2.0: sizes per entry, staged pages switch over on commit
+                info['pools'] = rq['pools'][0]
+                total = sum(int(x.rstrip('dv')) for x in info['pools'].split(','))
+                if rq.get('commit') == ['1']:
+                    dev['frames'].update(dev['staged'])
+                    dev['staged'].clear()
+                dev['frames'] = {k: v for k, v in dev['frames'].items() if k < total}
+            else:
+                info['count'], info['daily'] = int(rq['count'][0]), int(rq.get('daily', ['0'])[0])
+            return await route.fulfill(status=202, headers=cors)
+        await route.fulfill(status=404, headers=cors)
+
+    async def other(route):
+        url = route.request.url
+        if url.startswith('file:'):
+            await route.continue_()
+        elif url.endswith('.png'):      # any sprite, ribbon or badge: one made-up picture
+            await route.fulfill(status=200, content_type='image/png', headers={'Access-Control-Allow-Origin': '*'}, body=SPRITE)
+        else:
+            await route.abort()
+
+    ctx = await browser.new_context(viewport={'width': 1280, 'height': 900}, locale='en-US')
+    await ctx.route('**/*', other)
+    await ctx.route('http://fake.esp/**', device)
+    page = await ctx.new_page()
+    errors = []
+    page.on('pageerror', lambda e: errors.append(str(e)))
+    await page.goto((ROOT / 'data/www/index.html').as_uri())
+    await page.wait_for_timeout(1500)
+    await page.click('#sections button[data-section=display]')
+    await page.fill('input[name=deviceUrl]', 'http://fake.esp')
+    await page.dispatch_event('input[name=deviceUrl]', 'change')
+    await page.wait_for_function("typeof deviceInfo !== 'undefined' && deviceInfo", timeout=15000)
+    # pages added in 1.6 that need no network: countdown (big digits redrawn by the board),
+    # IV/EV chart, team split in two pages; plus the settings that travel with the rotation
+    await page.evaluate("""(FW2) => { Object.assign(state, {pg_countdown: true, cdDate: '25/12/2031', cdTitle: 'Test', pg_radar: true, teamPer: 3,
+        pg_shiny: true, shOdds: 1365, shCount: 777, pg_dexprog: true, dexCaught: '1-100', pg_whosthat: FW2, wtpCount: 3,
+        pg_split: true, splitLayout: 'q4', splitW0: 'sprite', splitW1: 'days', splitW2: 'countdown', splitW3: 'shiny',
+        quietOn: true, quietFrom: '23:00', quietTo: '07:00', flip: true, btnDouble: 2, btnLong: 3, pageMin: {cover: 30},
+        frame: 'double', pageFrame: {radar: 'wave', cover: 'studs'}, pageStyle: 'tab', dailyAt: '06:30', dailyEvery: 2, dailyShuffle: true});
+        buildTabs(); }""", fw == '2.0')
+    sent = "document.querySelector('#status').textContent.match(/Sent|failed|Too|take|draws|need firmware/)"
+    await page.click('#send')
+    try:
+        await page.wait_for_function(sent, timeout=180000)
+    except Exception:
+        print('      stuck at:', await page.inner_text('#status'), errors[:3])
+        raise
+    status = await page.inner_text('#status')
+    first = len(uploads)
+    resent = None
+    if api:      # same pages again: the board has them, nothing is uploaded
+        await page.evaluate("setStatus('…')")
+        await page.click('#send')
+        await page.wait_for_function(sent, timeout=120000)
+        resent = len(uploads) - first
+    i18n = await page.evaluate("""() => {
+        const bad = [], vars = s => (String(s).match(/\\{\\w+\\}/g) || []).sort().join();
+        for (const [name, T] of [['UI', UI], ['DISP', DISP], ['TYPE_NAMES', TYPE_NAMES]])
+          for (const l of Object.keys(LANGS)) for (const k of Object.keys(T.en)) {
+            if (!(k in (T[l] || {}))) bad.push(`${name}.${l}.${k} missing`);
+            else if (vars(T[l][k]) !== vars(T.en[k])) bad.push(`${name}.${l}.${k} placeholders`);
+          }
+        return bad; }""")
+    await ctx.close()
+
+    label = f"{pid} (firmware {fw or '1.4.0'})"
+    problems = list(errors)
+    problems += i18n[:8]
+    if 'Sent' not in status:
+        problems.append('status: ' + status)
+    if resent:
+        problems.append(f'second send uploaded {resent} pages again')
+    rot = parse_qs(dev['rotation'] or '')
+    if fw == '2.0' and (rot.get('commit') != ['1'] or not rot.get('pools')):
+        problems.append('2.0 send not staged with pools: ' + str(dev['rotation']))
+    if fw == '2.0' and dev['staged']:
+        problems.append(f'{len(dev["staged"])} staged pages left over')
+    if api and [rot.get(k, [''])[0] for k in ('qf', 'qt', 'flip', 'dbl', 'lng', 'dat', 'dev', 'dsh')] != ['1380', '420', '1', '2', '3', '390', '2', '1']:
+        problems.append('settings not sent with the rotation: ' + str(dev['rotation']))
+    if api and not rot.get('iv', [''])[0].startswith('30,'):
+        problems.append('per-page minutes not sent: ' + str(rot.get('iv')))
+    if not dev['frames'] or dev['rotation'] is None or not dev['glyphs']:
+        problems.append('nothing received')
+    allowed = {INKS.index(n) for n in palette}
+    today = (datetime.date.today() - datetime.date(1970, 1, 1)).days
+    sizes, counters = [], 0
+    for slot, (frame, ov) in sorted(dev['frames'].items()):
+        sizes.append(len(frame))
+        if api:
+            f = tmp / 'frame.bin'
+            f.write_bytes(frame)
+            r = subprocess.run([str(decoder), str(f)], capture_output=True)
+            if r.returncode or len(r.stdout) != pw * ph:
+                problems.append(f'slot {slot}: firmware decoder rejects the frame')
+                continue
+            px = r.stdout
+        else:
+            if len(frame) != W * H // 4:
+                problems.append(f'slot {slot}: legacy frame is {len(frame)} bytes')
+                continue
+            bit = lambda plane, i: frame[plane * (W * H // 8) + (i >> 3)] & (0x80 >> (i & 7))
+            px = bytes(1 if bit(0, i) else 2 if bit(1, i) else 0 for i in range(W * H))
+        if set(px) - allowed:
+            problems.append(f'slot {slot}: inks {sorted(set(px) - allowed)} not on this panel')
+        if ov:
+            counters += 1
+            redrawn = paint_overlays(px, ov, dev['glyphs'], today, info.get('counter', 0), pw)
+            if redrawn != px:
+                diff = [i for i in range(len(px)) if redrawn[i] != px[i]]
+                problems.append(f'slot {slot}: counter drawn by the board differs from the page '
+                                f'({len(diff)} px, first at {diff[0] % pw},{diff[0] // pw}; ov {ov})')
+    print(f"{'FAIL' if problems else 'ok  '} {label:22} {len(sizes)} pages, {counters} with counter, "
+          f"{sum(sizes) // 1024} KB total, largest {max(sizes, default=0)} B")
+    for p in problems:
+        print('     ', p)
+    return not problems
+
+
+async def main():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        decoder = tmp / 'decode'
+        subprocess.run(['g++', '-std=c++14', '-O1', '-o', str(decoder), str(ROOT / 'tests/decode_host.cpp')], check=True)
+        async with async_playwright() as p:
+            exe = os.environ.get('CHROME')
+            browser = await p.chromium.launch(args=['--no-sandbox', '--allow-file-access-from-files'], **({'executable_path': exe} if exe else {}))
+            ok = True
+            for pid, palette, api in PANELS[int(os.environ.get('FIRST', 0)):int(os.environ.get('PANELS', len(PANELS)))]:
+                ok &= await run_panel(browser, decoder, tmp, pid, palette, api)
+            await browser.close()
+    sys.exit(0 if ok else 1)
+
+
+asyncio.run(main())

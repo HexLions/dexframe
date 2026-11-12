@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DexFrame</title>
+<style>
+/*@css*/</style>
+</head>
+<body>
+<main>
+  <header class="top"><h1>DexFrame</h1>
+    <label class="lang"><span id="uiLangLabel"></span> <select id="uiLang"></select></label></header>
+  <div class="layout">
+  <section class="preview">
+    <div class="tabs" id="tabs"></div>
+    <canvas id="out" width="400" height="300"></canvas>
+    <div class="row">
+      <button class="primary" id="send" data-i18n="send"></button>
+      <button id="next" data-i18n="next"></button>
+      <button id="show" data-i18n="show_dev"></button>
+      <button id="save" data-i18n="save"></button>
+      <button id="autofill" data-i18n="autofill"></button>
+      <button id="png" data-i18n="png"></button>
+      <span id="status">…</span>
+    </div>
+  </section>
+  <div class="editor">
+    <nav class="sections" id="sections"></nav>
+    <form id="form" autocomplete="off"></form>
+  </div>
+  </div>
+</main>
+<script>
+/*@js*/</script>
+</body>
+</html>

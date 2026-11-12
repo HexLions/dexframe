@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DexFrame installer</title>
+<style>
+:root{--bg:#f4f4f2;--fg:#1b1b1b;--mu:#666;--card:#fff;--ln:#ddd;--acc:#2a6fdb}
+@media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#eee;--mu:#999;--card:#1e1e1e;--ln:#333;--acc:#5b93f0}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+main{max-width:620px;margin:0 auto;padding:24px 16px}
+h1{font-size:26px;margin:0 0 4px}
+p{margin:8px 0}
+.mu{color:var(--mu);font-size:14px}
+section{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:16px;margin:16px 0}
+h2{font-size:17px;margin:0 0 10px}
+label.opt{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--ln);border-radius:8px;margin-bottom:8px;cursor:pointer}
+label.opt:has(input:checked){border-color:var(--acc)}
+label.opt small{display:block;color:var(--mu)}
+ol{padding-left:20px;margin:8px 0}
+a{color:var(--acc)}
+button[slot=activate]{font:inherit;padding:10px 18px;border-radius:8px;border:0;background:var(--acc);color:#fff;cursor:pointer}
+.warn{border-left:3px solid #d08a00;padding-left:10px}
+</style>
+<script type="module" src="ewt/install-button.js"></script>
+</head>
+<body>
+<main>
+<h1>DexFrame installer</h1>
+<p class="mu">Version <span id="ver">…</span> · flashes an ESP32 from the browser, over USB. Nothing to install.</p>
+
+<section>
+<h2>1. Which panel do you have?</h2>
+<div id="panels"></div>
+</section>
+
+<section>
+<h2>2. Connect the board and install</h2>
+<ol>
+<li>Plug the ESP32 into this computer with a USB <b>data</b> cable.</li>
+<li>Press the button and pick the serial port of the board.</li>
+<li>When it is done, the display shows how to join the <code>DexFrame-Setup</code> Wi-Fi network.</li>
+</ol>
+<esp-web-install-button id="btn">
+<button slot="activate">Install DexFrame</button>
+<p slot="unsupported" class="warn">This browser cannot talk to USB serial ports. Use Chrome or Edge on a computer,
+or flash <code>dexframe-&lt;panel&gt;-factory.bin</code> at address 0x0 with esptool (see the README).</p>
+<p slot="not-allowed" class="warn">The installer needs to be opened over HTTPS.</p>
+</esp-web-install-button>
+<p class="mu warn">Installing erases the board: stored pages, saved card data and Wi-Fi settings.
+To update a board that already runs DexFrame and keep them, use <i>System → Update firmware</i> in its web page instead.</p>
+</section>
+
+<p class="mu"><a href="https://github.com/HexLions/dexframe">Source and documentation</a> · GPL-3.0 ·
+flashing by <a href="https://esphome.github.io/esp-web-tools/">ESP Web Tools</a></p>
+</main>
+<script>
+// panels.json is written by tools/build_installer.py: [{id, label, note, manifest}], plus the version.
+fetch('panels.json').then(r => r.json()).then(cfg => {
+  document.getElementById('ver').textContent = cfg.version;
+  const box = document.getElementById('panels'), btn = document.getElementById('btn');
+  cfg.panels.forEach((p, i) => {
+    const lab = document.createElement('label'); lab.className = 'opt';
+    const inp = document.createElement('input'); inp.type = 'radio'; inp.name = 'panel'; inp.checked = i === 0;
+    inp.onchange = () => btn.setAttribute('manifest', p.manifest);
+    const txt = document.createElement('span'), note = document.createElement('small');
+    txt.textContent = p.label; note.textContent = p.note; txt.append(note);
+    lab.append(inp, txt); box.append(lab);
+  });
+  if (cfg.panels.length) btn.setAttribute('manifest', cfg.panels[0].manifest);
+}).catch(() => { document.getElementById('panels').textContent = 'Could not load the list of builds.'; });
+</script>
+</body>
+</html>
