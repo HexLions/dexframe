@@ -76,7 +76,8 @@ function buildSystemBox() {
     if (!deviceInfo) return setStatus(t('sy_nodev'));
     try {
       setStatus(t('sy_sending', {f: f.name, i: 1, n: 1}));
-      await xhrUpload(api('/api/ota'), f, 'firmware', prog);
+      const md5 = md5Hex(new Uint8Array(await f.arrayBuffer()));
+      await xhrUpload(api('/api/ota?md5=' + md5), f, 'firmware', prog);
       setStatus(t('sy_fw_ok'));
     } catch (e) { setStatus(t('sy_err', {e: e.message})); }
     prog(null);
@@ -90,9 +91,9 @@ function buildSystemBox() {
     files.sort((a, b) => (a.webkitRelativePath.endsWith('/index.html') ? 1 : 0) - (b.webkitRelativePath.endsWith('/index.html') ? 1 : 0));
     try {
       for (let i = 0; i < files.length; i++) {
-        const rel = files[i].webkitRelativePath.split('/').slice(1).join('/');
-        setStatus(t('sy_sending', {f: rel, i: i + 1, n: files.length}));
-        await xhrUpload(api('/api/fs?path=' + encodeURIComponent('/www/' + rel)), files[i], 'file');
+        const up = await maybeGzip(files[i], files[i].webkitRelativePath.split('/').slice(1).join('/'));
+        setStatus(t('sy_sending', {f: up.rel, i: i + 1, n: files.length}));
+        await xhrUpload(api('/api/fs?path=' + encodeURIComponent('/www/' + up.rel)), up.file, 'file');
         prog((i + 1) / files.length);
       }
       setStatus(t('sy_ui_ok', {n: files.length}));
@@ -107,6 +108,7 @@ function renderSystemBox() {
   if ($('syWifiCur')) $('syWifiCur').textContent = i ? (i.ap ? 'DexFrame-Setup' : t('sy_wcur', {n: i.ssid || '—'})) : '';
   $('syInfo').textContent = i ? t('sy_info', {v: i.version || '<1.3', u: Math.round((i.fsUsed || 0) / 1024), t: Math.round((i.fsTotal || 0) / 1024),
     w: i.ap ? 'DexFrame-Setup' : (i.ssid || '—'), k: i.keySet ? t('sy_key_on') : ''}) : t('sy_nodev');
+  if (i && i.appSize && i.appSize < 0x180000) $('syInfo').textContent += '\n' + t('sy_fw_part');   // 1.x partition table
   const setup = api('/setup');
   $('sySetup').style.display = i && setup ? '' : 'none';
   if (setup) $('sySetup').href = setup.replace(/[?&]key=[^&]*/, '');

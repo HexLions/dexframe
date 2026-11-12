@@ -49,7 +49,11 @@ function renderPagesBox() {
       if (previewPage !== key) { previewPage = key; previewPart = 0; previewCard = null; buildTabs(); }
       scheduleRender(); saveState(true);
     };
-    row.append(lab, min, fr, move('▲', -1), move('▼', 1));
+    const show = document.createElement('button'); show.type = 'button'; show.textContent = '▶';
+    show.title = t('pg_show'); show.setAttribute('aria-label', t('pg_show'));
+    show.disabled = !state['pg_' + key] || !deviceInfo;
+    show.onclick = () => showOnDevice(key, 0);
+    row.append(lab, min, fr, show, move('▲', -1), move('▼', 1));
     return row;
   });
   $('pgList').replaceChildren(...rows);

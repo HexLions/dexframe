@@ -14,6 +14,7 @@
 #include <esp_sleep.h>
 #include <DNSServer.h>
 #include <Update.h>
+#include <esp_ota_ops.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include "panel.h"
@@ -34,7 +35,7 @@
 #ifndef DEVICE_HOSTNAME
 #define DEVICE_HOSTNAME "dexframe"
 #endif
-#define FW_VERSION "1.7.0"
+#define FW_VERSION "2.0.0"
 #define API_LEVEL 2      // 2: DXF1 frames, panel descriptor in /api/info
 #define AP_NAME "DexFrame-Setup"
 
@@ -106,6 +107,13 @@ bool apActive = false;          // setup access point + captive DNS running
 uint32_t restartAt = 0;         // deferred restart (after the HTTP reply went out)
 bool otaOk = false;
 String otaErr;
+// Marker in the firmware image: an OTA upload must carry the one of this panel, so a
+// build for another panel (or a file that is not DexFrame) is refused.
+extern "C" __attribute__((used)) const char DEXFRAME_MARK[] = "DXFPANEL=" PANEL_ID ";";
+String otaTail;            // last bytes of the previous chunk: the marker may straddle two
+bool otaMarkFound = false, otaMarkOther = false;
+uint32_t apSince = 0;      // when the setup access point was started (millis)
+RTC_DATA_ATTR time_t rtcLastSyncTry = 0;   // last NTP attempt on a timer wake (success or not)
 
 bool lastBoot = HIGH, lastWake = HIGH;
 
@@ -374,7 +382,7 @@ uint32_t entryInterval(int entry) {
     if (c < 0) c = pageIntervals.length();
     if (i == entry) {
       long v = pageIntervals.substring(from, c).toInt();
-      return v > 0 ? (uint32_t)v : intervalMin;
+      return v > 0 ? (uint32_t)min(v, 1440L) : intervalMin;
     }
     from = c + 1;
   }
@@ -478,6 +486,10 @@ void handleFrameDone() {
   LittleFS.rename(uploadPath + ".tmp", uploadPath + ".bin");
   int slot = server.arg("slot").toInt();
   if (server.hasArg("ov") && server.arg("ov").length()) {
+    const String ov = server.arg("ov");
+    bool ok = ov.length() < 200;
+    for (size_t i = 0; ok && i < ov.length(); i++) ok = isdigit((unsigned char)ov[i]) || ov[i] == ',' || ov[i] == '-' || ov[i] == ';';
+    if (!ok) { server.send(400, "text/plain", "bad ov"); return; }
     File o = LittleFS.open(slotPath(slot, ".ov"), "w");
     if (o) { o.print(server.arg("ov")); o.close(); }
   } else {
@@ -518,7 +530,10 @@ void applySettings() {
   if (server.hasArg("iv") && server.arg("iv").length() < 400) {
     String iv = server.arg("iv");
     bool ok = true;
-    for (size_t i = 0; ok && i < iv.length(); i++) ok = isdigit((unsigned char)iv[i]) || iv[i] == ',';
+    for (size_t i = 0, run = 0; ok && i < iv.length(); i++) {   // digits and commas, at most 4 digits each
+      run = iv[i] == ',' ? 0 : run + 1;
+      ok = (isdigit((unsigned char)iv[i]) || iv[i] == ',') && run <= 4;
+    }
     if (ok) { pageIntervals = iv; prefs.putString("ivs", pageIntervals); }
   }
   if (server.hasArg("flip")) { flipScreen = server.arg("flip") == "1"; prefs.putBool("flip", flipScreen); }
@@ -551,7 +566,7 @@ void handleRotation() {
   touch();
   if (!authorized()) return;
   int count = server.arg("count").toInt();
-  long interval = server.arg("interval").toInt();
+  long interval = server.hasArg("interval") ? server.arg("interval").toInt() : (long)intervalMin;
   int daily = server.hasArg("daily") ? server.arg("daily").toInt() : 0;
   if (count < 1 || daily < 0 || count + daily > MAX_SLOTS || interval < 0 || interval > 24 * 60) {
     server.send(400, "text/plain", "bad rotation");
@@ -625,6 +640,8 @@ void handlePages() {
   server.send(200, "application/json", j + "]");
 }
 
+uint32_t sketchSize() { static uint32_t n = ESP.getSketchSize(); return n; }   // reads the image once
+
 void handleInfo() {
   touch();
   int mv = batteryMv();
@@ -640,6 +657,8 @@ void handleInfo() {
              ",\"intervalMin\":" + String(intervalMin) +
              ",\"batLowMv\":" + String(batLowMv) + ",\"fullEvery\":" + String(fullEvery) +
              ",\"uptime\":" + String(millis() / 1000) +
+             ",\"appSize\":" + String(esp_ota_get_running_partition() ? esp_ota_get_running_partition()->size : 0) +
+             ",\"sketchSize\":" + String(sketchSize()) +
              ",\"panel\":\"" PANEL_ID "\"" +
              ",\"panelName\":\"" PANEL_NAME "\"" +
              ",\"palette\":" + paletteJson() +
@@ -704,10 +723,31 @@ void handleOtaUpload() {
     otaOk = keyOk();
     if (!otaOk) { otaErr = "key"; return; }
     Serial.printf("OTA: %s\n", up.filename.c_str());
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) { otaOk = false; otaErr = Update.errorString(); }
+    otaTail = ""; otaMarkFound = otaMarkOther = false;
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) { otaOk = false; otaErr = Update.errorString(); return; }
+    const String md5 = server.arg("md5");          // optional: checked by Update.end()
+    if (md5.length() == 32) Update.setMD5(md5.c_str());
   } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (otaOk) {
+      // look for the panel marker, also across the chunk boundary
+      String win = otaTail;
+      win.reserve(otaTail.length() + up.currentSize + 1);
+      for (size_t i = 0; i < up.currentSize; i++) win += up.buf[i] ? (char)up.buf[i] : '\x01';
+      int at = -1;
+      while ((at = win.indexOf("DXFPANEL=", at + 1)) >= 0) {
+        int end = win.indexOf(';', at);
+        if (end < 0) break;
+        if (win.substring(at + 9, end) == PANEL_ID) otaMarkFound = true; else otaMarkOther = true;
+      }
+      otaTail = win.length() > 32 ? win.substring(win.length() - 32) : win;
+    }
     if (otaOk && Update.write(up.buf, up.currentSize) != up.currentSize) { otaOk = false; otaErr = Update.errorString(); Update.abort(); }
   } else if (up.status == UPLOAD_FILE_END) {
+    if (otaOk && !otaMarkFound) {
+      otaOk = false;
+      otaErr = otaMarkOther ? "firmware for another panel (this one is " PANEL_ID ")" : "not a DexFrame firmware";
+      Update.abort();
+    }
     if (otaOk && !Update.end(true)) { otaOk = false; otaErr = Update.errorString(); }
   } else {
     if (otaOk) Update.abort();
@@ -716,7 +756,7 @@ void handleOtaUpload() {
 }
 
 void handleOtaDone() {
-  if (!otaOk) { server.send(otaErr == "key" ? 403 : 500, "text/plain", otaErr); return; }
+  if (!otaOk) { server.send(otaErr == "key" ? 403 : otaErr == "aborted" ? 500 : 400, "text/plain", otaErr); return; }
   server.send(200, "text/plain", "ok");
   restartAt = millis() + 800;
 }
@@ -737,7 +777,8 @@ void handleFsUpload() {
       uploadOk = (bool)uploadFile;
     }
   } else if (up.status == UPLOAD_FILE_WRITE) {
-    if (uploadOk && uploadFile.write(up.buf, up.currentSize) != up.currentSize) uploadOk = false;
+    if (uploadOk && (up.totalSize + up.currentSize > 512 * 1024 ||
+                     uploadFile.write(up.buf, up.currentSize) != up.currentSize)) uploadOk = false;
   } else if (up.status == UPLOAD_FILE_END) {
     if (uploadFile) uploadFile.close();
   } else {
@@ -755,7 +796,8 @@ void handleFsDone() {
     return;
   }
   LittleFS.remove(p);
-  if (p.endsWith(".json")) LittleFS.remove(p + ".gz");      // keep one copy of the pkx data
+  // one copy of each file: plain and gzipped versions replace each other
+  if (p.endsWith(".gz")) LittleFS.remove(p.substring(0, p.length() - 3)); else LittleFS.remove(p + ".gz");
   LittleFS.rename(p + ".tmp", p);
   server.send(204);
 }
@@ -773,7 +815,9 @@ void listDir(const String& dir, String& out) {
 
 void handleFsList() {
   String out = "[";
-  listDir(server.hasArg("dir") ? server.arg("dir") : "/www", out);
+  const String dir = server.hasArg("dir") ? server.arg("dir") : "/www";
+  if (dir != "/www" && !validWwwPath(dir)) { server.send(400, "text/plain", "bad dir"); return; }
+  listDir(dir, out);
   out += "]";
   server.send(200, "application/json", out);
 }
@@ -813,6 +857,7 @@ void startAP() {
   dns.setErrorReplyCode(DNSReplyCode::NoError);
   dns.start(53, "*", WiFi.softAPIP());
   apActive = true;
+  apSince = millis();
   Serial.printf("Setup AP \"%s\": http://%s/setup\n", AP_NAME, WiFi.softAPIP().toString().c_str());
 }
 
@@ -911,7 +956,10 @@ void handleWifiSave() {
   if (ssid.isEmpty() || ssid.length() > 32 || server.arg("pass").length() > 64) { server.send(400, "text/plain", "ssid/pass"); return; }
   prefs.putString("ssid", ssid);
   prefs.putString("pass", server.arg("pass"));
-  if (host.length() && host.length() < 32) prefs.putString("host", host);
+  bool hostOk = host.length() > 0 && host.length() < 32 && host[0] != '-';
+  for (size_t i = 0; hostOk && i < host.length(); i++) hostOk = isalnum((unsigned char)host[i]) || host[i] == '-';
+  if (hostOk) prefs.putString("host", host);
+  else if (host.length()) { server.send(400, "text/plain", "host: letters, digits and -"); return; }
   server.send(200, "text/plain", "ok");
   restartAt = millis() + 800;
 }
@@ -942,8 +990,21 @@ void handleTrainerFetch() {
   const int len = http.getSize();
   if (code != 200 || len > 65536) { http.end(); server.send(502, "text/plain", "HTTP " + String(code)); return; }
   File out = LittleFS.open(path + ".tmp", "w", true);
-  const int n = out ? http.writeToStream(&out) : -1;
-  if (out) out.close();
+  int n = out ? 0 : -1;
+  if (out) {     // bounded copy: a chunked reply has no length up front
+    WiFiClient* st = http.getStreamPtr();
+    uint8_t buf[512];
+    uint32_t t0 = millis();
+    while (http.connected() && (len < 0 || n < len) && millis() - t0 < 15000) {
+      size_t a = st->available();
+      if (!a) { delay(5); continue; }
+      int r = st->readBytes(buf, min(a, sizeof buf));
+      if (r <= 0) break;
+      if (n + r > 65536 || out.write(buf, r) != (size_t)r) { n = -1; break; }
+      n += r;
+    }
+    out.close();
+  }
   http.end();
   if (n <= 0 || (len > 0 && n != len)) { LittleFS.remove(path + ".tmp"); server.send(502, "text/plain", "download"); return; }
   LittleFS.rename(path + ".tmp", path);
@@ -1093,18 +1154,18 @@ void loadConfig() {
   prefs.begin("dexframe", false);
   slotCount = constrain(prefs.getInt("count", 1), 1, MAX_SLOTS);
   dailyCount = constrain(prefs.getInt("daily", 0), 0, MAX_SLOTS - slotCount);
-  intervalMin = prefs.getUInt("interval", 10);
+  intervalMin = min(prefs.getUInt("interval", 10), 24u * 60);
   sleepEnabled = prefs.getBool("sleep", false);
-  awakeMin = prefs.getUInt("awake", 3);
+  awakeMin = constrain(prefs.getUInt("awake", 3), 1u, 60u);
   tz = prefs.getString("tz", DEFAULT_TZ);
-  quietFrom = prefs.getInt("qf", -1);
-  quietTo = prefs.getInt("qt", -1);
+  quietFrom = constrain(prefs.getInt("qf", -1), -1, 1439);
+  quietTo = constrain(prefs.getInt("qt", -1), -1, 1439);
   pageIntervals = prefs.getString("ivs", "");
   flipScreen = prefs.getBool("flip", false);
-  actDouble = prefs.getUChar("dbl", 0);
-  actLong = prefs.getUChar("lng", 0);
-  batLowMv = prefs.getInt("batlow", BAT_LOW_MV);
-  fullEvery = prefs.getInt("fullevery", FULL_EVERY);
+  actDouble = min<uint8_t>(prefs.getUChar("dbl", 0), 3);
+  actLong = min<uint8_t>(prefs.getUChar("lng", 0), 3);
+  batLowMv = constrain(prefs.getInt("batlow", BAT_LOW_MV), 3000, 4200);
+  fullEvery = constrain(prefs.getInt("fullevery", FULL_EVERY), 1, 100);
   dailyAt = constrain(prefs.getInt("dat", 0), 0, 1439);
   dailyEvery = constrain(prefs.getInt("dev", 1), 1, 30);
   dailyShuffle = prefs.getBool("dsh", false);
@@ -1117,6 +1178,7 @@ void loadConfig() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.printf("\nDexFrame %s (%s)\n", FW_VERSION, DEXFRAME_MARK);
   rtc_gpio_deinit((gpio_num_t)BTN_WAKE);   // back to a normal GPIO after an ext0 wake
   pinMode(BTN_BOOT, INPUT_PULLUP);
   pinMode(BTN_WAKE, INPUT_PULLUP);
@@ -1132,7 +1194,9 @@ void setup() {
 
   if (sleepEnabled && cause == ESP_SLEEP_WAKEUP_TIMER) {
     // Quiet wake: no WiFi, unless the clock needs a daily NTP resync.
-    if (!timeValid() || time(nullptr) - rtcLastSync > 24 * 3600) {
+    // a failed attempt is not retried for 6 hours (no 8 s of Wi-Fi on every wake)
+    if (!timeValid() || (time(nullptr) - rtcLastSync > 24 * 3600 && time(nullptr) - rtcLastSyncTry > 6 * 3600)) {
+      rtcLastSyncTry = time(nullptr);
       if (connectWifi(8000)) syncTime();
       WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
     }
@@ -1178,6 +1242,14 @@ void loop() {
     syncTime();
     MDNS.end();
     if (MDNS.begin(hostName.c_str())) MDNS.addService("http", "tcp", 80);
+  }
+
+  // Power saving with a saved network that is down: the access point would keep the
+  // board awake (and the battery draining). After 10 minutes, give up until next wake.
+  if (apActive && sleepEnabled && !wifiSsid.isEmpty() && millis() - apSince > 10 * 60000UL &&
+      millis() - lastActivity > 2 * 60000UL) {
+    stopAP();
+    WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
   }
 
   // A button held 8 s: forget Wi-Fi and the admin key, restart into setup mode.

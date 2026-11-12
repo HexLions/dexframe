@@ -63,7 +63,7 @@ jobs:
   # Web installer (ESP Web Tools): built on every run, published to GitHub Pages on v* tags.
   # Needs Settings -> Pages -> Source: "GitHub Actions" in the repository.
   installer:
-    needs: firmware
+    needs: [tests, firmware]
     runs-on: ubuntu-latest
     permissions:
       pages: write

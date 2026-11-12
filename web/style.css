@@ -91,3 +91,4 @@ details.adv .grid{margin-top:8px}
 .pgrow select{max-width:9.5em;min-width:0}
 .pgrow{flex-wrap:wrap}
 .pgrow label{flex:1 1 140px}
+#syInfo{white-space:pre-line}

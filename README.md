@@ -85,15 +85,25 @@ pio device monitor             # prints the setup / device URL
 If the saved network is unreachable, the board opens the `DexFrame-Setup` access point and keeps
 retrying the network in the background; it closes the access point as soon as the network is back.
 
+### Upgrading from 1.x to 2.0
+
+2.0 changes the partition table (two 1.5 MB app slots and a 960 KB file system, `partitions.csv`, instead of
+1.25 MB slots and 1.4 MB): there is room for new firmware features again, and the web UI is stored gzipped so
+the smaller file system still has more free space than before. An update over Wi-Fi cannot move partitions,
+so **flash the factory image once** (web installer or esptool, see *Install*); export a backup first, it
+erases the board. A 2.0 firmware installed over Wi-Fi on a 1.x board runs, but keeps the old layout and says
+so in *System*.
+
 ### Updates over Wi-Fi
 
 *System* section of the web UI (or `http://dexframe.local/setup`, which is built into the firmware and
 works even with an empty file system):
 
 - **Update firmware**: `dexframe-<panel>-ota.bin` from the release, or `.pio/build/<env>/firmware.bin`.
-  Pages sent with firmware 1.4.0 keep showing after the update; send them again to store them compressed.
+  The board refuses a file that is not DexFrame or is built for another panel (each image carries a
+  `DXFPANEL=<panel>;` marker), and one damaged on the way (the web UI sends its MD5, checked after writing).
 - **Update web UI**: pick the project's `data/www` folder; files are uploaded one by one (`index.html` last),
-  pages and saved data stay. Also the way to add your ribbon/trainer images without `uploadfs`.
+  text files gzipped in the browser, pages and saved data stay. Also the way to add your ribbon/trainer images without `uploadfs`.
 - **Key** (optional): when set, every change to the board (pages, settings, updates, Wi-Fi) needs it.
   Without it, anyone on your network can change or reflash the board.
 - **Wi-Fi**: scan and switch network from the *System* section (the board restarts and joins it).
@@ -149,6 +159,8 @@ Off by default; turn them on in *Pages*.
   previous page, next page or a full refresh. With a double-click action set, a single click waits 0.45 s.
 - **Low battery threshold** and **full refresh every N counter updates** (B/W panel) are settings too.
 - **Download PNG** saves the page in the preview as a 400×300 image.
+- **Show on the display** puts the page in the preview on the e-paper now; the ▶ next to each page in
+  *Pages* does the same (`/api/show`). It needs the board to hold the pages listed in the UI.
 - *Send all pages* renders four pages at a time and skips the ones the board already holds
   (`/api/pages` returns size and CRC-32 of each), so a small change uploads one page instead of all.
 
@@ -280,7 +292,7 @@ restores it. Images from your own folders are not included, only which ones you 
 
 ## Driving the display from a PC (large image sets)
 
-Big image sets don't fit the ESP32 (a 1500-sprite trainer pack is ~2.8 MB; LittleFS has ~1.4 MB).
+Big image sets don't fit the ESP32 (a 1500-sprite trainer pack is ~2.8 MB; LittleFS has 960 KB).
 The board doesn't need them: it only stores the rendered pages (a few KB each).
 
 1. Build a single file with everything embedded:
@@ -317,9 +329,9 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 | POST | `/api/settings` | the same settings as `/api/rotation` (any subset, no `count`/`daily`): stored without touching the pages; the page on screen is redrawn only if it changes |
 | POST | `/api/refresh` | full refresh of the page on screen |
 | POST | `/api/next` | show next page |
-| POST | `/api/show?slot=N` | show page N |
+| POST | `/api/show?slot=N` | show rotation entry N now (the Pokémon of the day is the last one) |
 | GET/POST | `/api/state` | card data JSON (≤64 KB) |
-| POST | `/api/ota` | multipart firmware `.bin` (app image), restarts when done |
+| POST | `/api/ota[?md5=…]` | multipart firmware `.bin` (app image) for this panel; optional MD5 checked after writing; restarts when done |
 | GET | `/api/fs[?dir=/www]` | → `[{path,size}]` |
 | POST | `/api/fs?path=/www/…` | multipart file, written below `/www/` only |
 | POST | `/api/fs/delete?path=/www/…` | delete a web UI file |
@@ -364,7 +376,8 @@ Raw two-plane pages from firmware 1.4.0 (30000 bytes) are still accepted on 400�
 ## Web UI sources
 
 `data/www/index.html` is generated: edit `web/` (`index.template.html`, `style.css`, `js/NN-name.js`) and run
-`python3 tools/build_ui.py`. The script only joins the files in name order, with no bundler or minifier, so the
+`python3 tools/build_ui.py`. On the board the text files are stored gzipped: `tools/stage_fs.py` makes the
+LittleFS folder (PlatformIO runs it before `buildfs`/`uploadfs`), and the web server sends `x.gz` for `x`. The script only joins the files in name order, with no bundler or minifier, so the
 file the board serves stays readable. CI fails if the generated file is not up to date.
 
 ## Web installer

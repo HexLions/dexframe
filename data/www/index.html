@@ -98,6 +98,7 @@ details.adv .grid{margin-top:8px}
 .pgrow select{max-width:9.5em;min-width:0}
 .pgrow{flex-wrap:wrap}
 .pgrow label{flex:1 1 140px}
+#syInfo{white-space:pre-line}
 </style>
 </head>
 <body>
@@ -111,6 +112,7 @@ details.adv .grid{margin-top:8px}
     <div class="row">
       <button class="primary" id="send" data-i18n="send"></button>
       <button id="next" data-i18n="next"></button>
+      <button id="show" data-i18n="show_dev"></button>
       <button id="save" data-i18n="save"></button>
       <button id="autofill" data-i18n="autofill"></button>
       <button id="png" data-i18n="png"></button>
@@ -1067,6 +1069,37 @@ Object.assign(UI.de, {
   pw_volt: '{v} V', pw_usb: 'lädt / über USB versorgt', pw_low: 'Akku schwach',
   pw_nosense: 'Akkumessung aus (BAT_PIN)', pw_nobat: 'Kein Akku angeschlossen (über USB versorgt)',
   pw_oldfw: 'alte Firmware: aktualisieren, um ohne erneutes Senden der Seiten zu speichern',
+});
+// ---------- i18n: 2.0 ----------
+Object.assign(UI.it, {
+  show_dev: 'Mostra sul display', pg_show: 'Mostra subito questa pagina sul display',
+  st_show: 'Sul display: {p}', st_show_stale: 'Il display ha altre pagine: premi prima "Invia tutte le pagine"',
+  st_show_none: 'Questa pagina non è nella rotazione',
+  sy_fw_part: 'Questa scheda ha la vecchia tabella delle partizioni: per avere lo spazio della 2.0 serve un flash completo (file factory o installer web).',
+});
+Object.assign(UI.en, {
+  show_dev: 'Show on the display', pg_show: 'Show this page on the display now',
+  st_show: 'On the display: {p}', st_show_stale: 'The display holds other pages: press "Send all pages" first',
+  st_show_none: 'This page is not in the rotation',
+  sy_fw_part: 'This board has the old partition table: to get the 2.0 space it needs a full flash (factory file or web installer).',
+});
+Object.assign(UI.es, {
+  show_dev: 'Mostrar en la pantalla', pg_show: 'Mostrar ahora esta página en la pantalla',
+  st_show: 'En la pantalla: {p}', st_show_stale: 'La pantalla tiene otras páginas: pulsa antes "Enviar todas las páginas"',
+  st_show_none: 'Esta página no está en la rotación',
+  sy_fw_part: 'Esta placa tiene la tabla de particiones antigua: para tener el espacio de la 2.0 hace falta un flasheo completo (archivo factory o instalador web).',
+});
+Object.assign(UI.fr, {
+  show_dev: 'Afficher sur l\'écran', pg_show: 'Afficher cette page sur l\'écran maintenant',
+  st_show: 'Sur l\'écran : {p}', st_show_stale: 'L\'écran contient d\'autres pages : appuyez d\'abord sur « Envoyer toutes les pages »',
+  st_show_none: 'Cette page n\'est pas dans la rotation',
+  sy_fw_part: 'Cette carte a l\'ancienne table de partitions : pour avoir l\'espace de la 2.0, il faut un flash complet (fichier factory ou installateur web).',
+});
+Object.assign(UI.de, {
+  show_dev: 'Auf dem Display zeigen', pg_show: 'Diese Seite jetzt auf dem Display zeigen',
+  st_show: 'Auf dem Display: {p}', st_show_stale: 'Das Display hat andere Seiten: zuerst „Alle Seiten senden“ drücken',
+  st_show_none: 'Diese Seite ist nicht in der Rotation',
+  sy_fw_part: 'Dieses Board hat die alte Partitionstabelle: für den Platz von 2.0 ist ein vollständiges Flashen nötig (Factory-Datei oder Web-Installer).',
 });
 // ---------- form ----------
 function buildForm() {
@@ -3138,7 +3171,11 @@ function renderPagesBox() {
       if (previewPage !== key) { previewPage = key; previewPart = 0; previewCard = null; buildTabs(); }
       scheduleRender(); saveState(true);
     };
-    row.append(lab, min, fr, move('▲', -1), move('▼', 1));
+    const show = document.createElement('button'); show.type = 'button'; show.textContent = '▶';
+    show.title = t('pg_show'); show.setAttribute('aria-label', t('pg_show'));
+    show.disabled = !state['pg_' + key] || !deviceInfo;
+    show.onclick = () => showOnDevice(key, 0);
+    row.append(lab, min, fr, show, move('▲', -1), move('▼', 1));
     return row;
   });
   $('pgList').replaceChildren(...rows);
@@ -3792,6 +3829,47 @@ function renderStyleBox() {
   }));
 }
 
+// ---------- MD5 (RFC 1321), for the firmware upload check ----------
+// The board compares it with the image it wrote (Update.setMD5), so a file damaged on
+// the way is refused instead of booted. Not used for anything secret.
+function md5Hex(bytes) {
+  const K = new Uint32Array(64), S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+  for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 2 ** 32) >>> 0;
+  const n = bytes.length, total = ((n + 8) >>> 6) + 1 << 6;
+  const buf = new Uint8Array(total);
+  buf.set(bytes); buf[n] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(total - 8, (n * 8) >>> 0, true);
+  dv.setUint32(total - 4, Math.floor(n / 0x20000000), true);
+  let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  const M = new Uint32Array(16);
+  for (let off = 0; off < total; off += 64) {
+    for (let i = 0; i < 16; i++) M[i] = dv.getUint32(off + i * 4, true);
+    let a = a0, b = b0, c = c0, d = d0;
+    for (let i = 0; i < 64; i++) {
+      let f, g;
+      if (i < 16) { f = (b & c) | (~b & d); g = i; }
+      else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) & 15; }
+      else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) & 15; }
+      else { f = c ^ (b | ~d); g = (7 * i) & 15; }
+      const s = S[(i >> 4) * 4 + (i & 3)];
+      const x = (a + f + K[i] + M[g]) >>> 0;
+      a = d; d = c; c = b;
+      b = (b + ((x << s) | (x >>> (32 - s)))) >>> 0;
+    }
+    a0 = (a0 + a) >>> 0; b0 = (b0 + b) >>> 0; c0 = (c0 + c) >>> 0; d0 = (d0 + d) >>> 0;
+  }
+  return [a0, b0, c0, d0].map(v => [0, 8, 16, 24].map(k => ((v >>> k) & 255).toString(16).padStart(2, '0')).join('')).join('');
+}
+
+// Text files of the web UI go to the board gzipped (it serves x.gz for x): about a
+// quarter of the space. Browsers without CompressionStream send them as they are.
+const GZIP_EXT = /\.(html|css|js|ttf|json|svg)$/i;
+async function maybeGzip(file, rel) {
+  if (!GZIP_EXT.test(rel) || typeof CompressionStream === 'undefined') return {file, rel};
+  const gz = await new Response(file.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+  return {file: new File([gz], file.name + '.gz'), rel: rel + '.gz'};
+}
 // ---------- system: firmware / web UI update, key ----------
 function xhrUpload(url, file, field, onProgress) {
   return new Promise((res, rej) => {
@@ -3870,7 +3948,8 @@ function buildSystemBox() {
     if (!deviceInfo) return setStatus(t('sy_nodev'));
     try {
       setStatus(t('sy_sending', {f: f.name, i: 1, n: 1}));
-      await xhrUpload(api('/api/ota'), f, 'firmware', prog);
+      const md5 = md5Hex(new Uint8Array(await f.arrayBuffer()));
+      await xhrUpload(api('/api/ota?md5=' + md5), f, 'firmware', prog);
       setStatus(t('sy_fw_ok'));
     } catch (e) { setStatus(t('sy_err', {e: e.message})); }
     prog(null);
@@ -3884,9 +3963,9 @@ function buildSystemBox() {
     files.sort((a, b) => (a.webkitRelativePath.endsWith('/index.html') ? 1 : 0) - (b.webkitRelativePath.endsWith('/index.html') ? 1 : 0));
     try {
       for (let i = 0; i < files.length; i++) {
-        const rel = files[i].webkitRelativePath.split('/').slice(1).join('/');
-        setStatus(t('sy_sending', {f: rel, i: i + 1, n: files.length}));
-        await xhrUpload(api('/api/fs?path=' + encodeURIComponent('/www/' + rel)), files[i], 'file');
+        const up = await maybeGzip(files[i], files[i].webkitRelativePath.split('/').slice(1).join('/'));
+        setStatus(t('sy_sending', {f: up.rel, i: i + 1, n: files.length}));
+        await xhrUpload(api('/api/fs?path=' + encodeURIComponent('/www/' + up.rel)), up.file, 'file');
         prog((i + 1) / files.length);
       }
       setStatus(t('sy_ui_ok', {n: files.length}));
@@ -3901,6 +3980,7 @@ function renderSystemBox() {
   if ($('syWifiCur')) $('syWifiCur').textContent = i ? (i.ap ? 'DexFrame-Setup' : t('sy_wcur', {n: i.ssid || '—'})) : '';
   $('syInfo').textContent = i ? t('sy_info', {v: i.version || '<1.3', u: Math.round((i.fsUsed || 0) / 1024), t: Math.round((i.fsTotal || 0) / 1024),
     w: i.ap ? 'DexFrame-Setup' : (i.ssid || '—'), k: i.keySet ? t('sy_key_on') : ''}) : t('sy_nodev');
+  if (i && i.appSize && i.appSize < 0x180000) $('syInfo').textContent += '\n' + t('sy_fw_part');   // 1.x partition table
   const setup = api('/setup');
   $('sySetup').style.display = i && setup ? '' : 'none';
   if (setup) $('sySetup').href = setup.replace(/[?&]key=[^&]*/, '');
@@ -4084,6 +4164,18 @@ async function sendAll() {
   } catch (e) { setStatus(t('st_send_fail', {e: e.message})); }
 }
 
+// Puts one page of the rotation on the e-paper now (POST /api/show?slot=<rotation entry>).
+// Only when the board holds the rotation listed here: otherwise the numbers differ.
+async function showOnDevice(key, part = 0) {
+  if (!deviceInfo) { setStatus(t('st_no_device')); return; }
+  const entries = rotation(), daily = state.pg_daily ? 1 : 0;
+  if (deviceInfo.count !== entries.length || Boolean(deviceInfo.daily) !== Boolean(daily)) { setStatus(t('st_show_stale')); return; }
+  const idx = key == null ? -1 : key === 'daily' ? entries.length : rotationIndex(key, part);
+  if (idx < 0) { setStatus(t('st_show_none')); return; }
+  const r = await fetch(api('/api/show?slot=' + idx), {method: 'POST'}).catch(() => null);
+  setStatus(r?.ok ? t('st_show', {p: t('pg_' + key) + (pageParts(key) > 1 ? ' ' + (part + 1) : '')}) : t('st_err', {e: r ? r.status : 'network'}));
+}
+
 async function nextOnDevice() {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
   const r = await fetch(api('/api/next'), {method: 'POST'});
@@ -4222,6 +4314,7 @@ $('uiLang').addEventListener('input', async () => {
 $('send').onclick = sendAll;
 $('png').onclick = exportPng;
 $('next').onclick = nextOnDevice;
+$('show').onclick = () => showOnDevice(previewCard ? null : previewPage, previewPart);
 $('save').onclick = () => saveState(false);
 $('autofill').onclick = autofill;
 

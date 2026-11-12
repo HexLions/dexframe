@@ -117,6 +117,18 @@ async function sendAll() {
   } catch (e) { setStatus(t('st_send_fail', {e: e.message})); }
 }
 
+// Puts one page of the rotation on the e-paper now (POST /api/show?slot=<rotation entry>).
+// Only when the board holds the rotation listed here: otherwise the numbers differ.
+async function showOnDevice(key, part = 0) {
+  if (!deviceInfo) { setStatus(t('st_no_device')); return; }
+  const entries = rotation(), daily = state.pg_daily ? 1 : 0;
+  if (deviceInfo.count !== entries.length || Boolean(deviceInfo.daily) !== Boolean(daily)) { setStatus(t('st_show_stale')); return; }
+  const idx = key == null ? -1 : key === 'daily' ? entries.length : rotationIndex(key, part);
+  if (idx < 0) { setStatus(t('st_show_none')); return; }
+  const r = await fetch(api('/api/show?slot=' + idx), {method: 'POST'}).catch(() => null);
+  setStatus(r?.ok ? t('st_show', {p: t('pg_' + key) + (pageParts(key) > 1 ? ' ' + (part + 1) : '')}) : t('st_err', {e: r ? r.status : 'network'}));
+}
+
 async function nextOnDevice() {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
   const r = await fetch(api('/api/next'), {method: 'POST'});
@@ -255,6 +267,7 @@ $('uiLang').addEventListener('input', async () => {
 $('send').onclick = sendAll;
 $('png').onclick = exportPng;
 $('next').onclick = nextOnDevice;
+$('show').onclick = () => showOnDevice(previewCard ? null : previewPage, previewPart);
 $('save').onclick = () => saveState(false);
 $('autofill').onclick = autofill;
 
