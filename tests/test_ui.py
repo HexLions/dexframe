@@ -29,12 +29,15 @@ from playwright.async_api import async_playwright
 ROOT = Path(__file__).resolve().parent.parent
 W, H = 400, 300
 INKS = ['white', 'black', 'red', 'yellow', 'blue', 'green', 'orange']
-PANELS = [  # id, palette, firmware API level (None = firmware 1.4.0: raw two-plane pages)
-    ('bw', ['white', 'black'], 2),
-    ('bwr', ['white', 'black', 'red'], 2),
-    ('bwry', ['white', 'black', 'red', 'yellow'], 2),
+PANELS = [  # id, palette, firmware: '2.0' (pools, staged send), '1.7', None = 1.4.0 (raw two-plane pages)
+    ('bw', ['white', 'black'], '2.0'),
+    ('bwr', ['white', 'black', 'red'], '2.0'),
+    ('bwry', ['white', 'black', 'red', 'yellow'], '2.0'),
+    ('bwr', ['white', 'black', 'red'], '1.7'),
     ('bwr', ['white', 'black', 'red'], None),
 ]
+FEATURES = {'1.7': 'pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh',
+            '2.0': 'pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh,pools,stage,prev'}
 
 
 def fake_sprite(size=64):
@@ -101,12 +104,14 @@ def paint_overlay(px, ov, g, today):
 
 
 async def run_panel(browser, decoder, tmp, pid, palette, api):
-    dev = {'frames': {}, 'glyphs': None, 'rotation': None}
+    fw = api
+    api = 2 if fw else None
+    dev = {'frames': {}, 'staged': {}, 'glyphs': None, 'rotation': None}
     info = {'w': W, 'h': H, 'red': 'red' in palette, 'maxSlots': 48, 'slotsFit': 28, 'count': 1, 'daily': 0,
             'entries': 1, 'current': 0, 'interval': 10, 'batteryMv': 3912, 'busy': False}
     if api:
         info.update(api=api, panel=pid, palette=palette, bpp=2 if len(palette) > 2 else 1, pageBudget=1_000_000,
-                    features='pages,quiet,intervals,flip,button,thresholds,countdown')
+                    features=FEATURES[fw], freeBytes=600_000, pending=False)
     uploads = []
 
     async def device(route):
@@ -124,10 +129,20 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
             return await route.fulfill(status=200, headers=cors, content_type='application/json', body=json.dumps(pages))
         if u.path == '/api/frame':
             uploads.append(int(q['slot'][0]))
-            dev['frames'][int(q['slot'][0])] = (file_part(req), q.get('ov', [None])[0])
+            dev['staged' if q.get('stage') == ['1'] else 'frames'][int(q['slot'][0])] = (file_part(req), q.get('ov', [None])[0])
             return await route.fulfill(status=204, headers=cors)
         if u.path == '/api/rotation':
             dev['rotation'] = req.post_data
+            rq = parse_qs(req.post_data)
+            if 'pools' in rq:          # 2.0: sizes per entry, staged pages switch over on commit
+                info['pools'] = rq['pools'][0]
+                total = sum(int(x.rstrip('dv')) for x in info['pools'].split(','))
+                if rq.get('commit') == ['1']:
+                    dev['frames'].update(dev['staged'])
+                    dev['staged'].clear()
+                dev['frames'] = {k: v for k, v in dev['frames'].items() if k < total}
+            else:
+                info['count'], info['daily'] = int(rq['count'][0]), int(rq.get('daily', ['0'])[0])
             return await route.fulfill(status=202, headers=cors)
         await route.fulfill(status=404, headers=cors)
 
@@ -179,7 +194,7 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
         return bad; }""")
     await ctx.close()
 
-    label = f"{pid}{'' if api else ' (firmware 1.4.0)'}"
+    label = f"{pid} (firmware {fw or '1.4.0'})"
     problems = list(errors)
     problems += i18n[:8]
     if 'Sent' not in status:
@@ -187,6 +202,10 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
     if resent:
         problems.append(f'second send uploaded {resent} pages again')
     rot = parse_qs(dev['rotation'] or '')
+    if fw == '2.0' and (rot.get('commit') != ['1'] or not rot.get('pools')):
+        problems.append('2.0 send not staged with pools: ' + str(dev['rotation']))
+    if fw == '2.0' and dev['staged']:
+        problems.append(f'{len(dev["staged"])} staged pages left over')
     if api and [rot.get(k, [''])[0] for k in ('qf', 'qt', 'flip', 'dbl', 'lng', 'dat', 'dev', 'dsh')] != ['1380', '420', '1', '2', '3', '390', '2', '1']:
         problems.append('settings not sent with the rotation: ' + str(dev['rotation']))
     if api and not rot.get('iv', [''])[0].startswith('30,'):

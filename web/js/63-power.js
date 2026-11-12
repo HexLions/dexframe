@@ -15,10 +15,11 @@ function lipoPercent(mv) {
 }
 
 const dailySettings = (s = state) => ({dat: dailyAtOf(s), dev: dailyEveryOf(s), dsh: s.dailyShuffle ? 1 : 0});
+const orderSettings = (s = state) => ({ord: s.orderShuffle ? 1 : 0, qi: Math.max(0, Math.round(Number(s.quietInterval) || 0))});
 
 // The rotation settings that make sense without sending the pages again.
 function settingsBody() {
-  const entries = rotation(), daily = state.pg_daily ? dailyIds() : [];
+  const plan = rotationPlan();
   const mins = k => Math.max(0, Math.round(Number((state.pageMin || {})[k]) || 0));
   const body = {interval: Math.max(0, Number(state.interval) || 0),
     sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
@@ -26,10 +27,9 @@ function settingsBody() {
     qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
     flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
     batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10)),
-    ...dailySettings()};
+    ...dailySettings(), ...orderSettings()};
   // per-page minutes only when the pages on the board are the ones listed here
-  if (deviceInfo && deviceInfo.count === entries.length && (deviceInfo.daily || 0) === daily.length)
-    body.iv = [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(',');
+  if (boardMatches()) body.iv = plan.map(e => mins(e.key)).join(',');
   return new URLSearchParams(body);
 }
 

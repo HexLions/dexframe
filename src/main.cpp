@@ -20,6 +20,7 @@
 #include "panel.h"
 #include "frame_codec.h"
 #include "daily_pick.h"
+#include "rotation.h"
 #include "dexframe_types.h"
 #include "setup_page.h"
 // Optional compile-time defaults; Wi-Fi is normally set from the setup page (stored in NVS).
@@ -72,8 +73,9 @@ DNSServer dns;
 Preferences prefs;
 
 // ---- configuration (NVS) ----
-int slotCount = 1;            // regular pages in rotation (slots 0..slotCount-1)
-int dailyCount = 0;           // "of the day" pool, slots slotCount..slotCount+dailyCount-1
+rot::Rotation rotCfg;         // entries and the pool of pages behind each (include/rotation.h)
+bool orderShuffle = false;    // rotation order: a new random order every round
+uint32_t quietIntervalMin = 0;   // page change during the quiet hours (0 = none)
 uint32_t intervalMin = 10;    // 0 = manual only (button / API)
 bool sleepEnabled = false;
 int quietFrom = -1, quietTo = -1;   // quiet hours, minutes of the day; -1 = off. No timed page change inside.
@@ -91,13 +93,16 @@ String wifiSsid, wifiPass, hostName, adminKey;
 
 // ---- survives deep sleep ----
 RTC_DATA_ATTR int rtcEntry = 0;        // rotation entry on screen
+RTC_DATA_ATTR int rtcPos = 0;          // its position in the current round
+RTC_DATA_ATTR uint32_t rtcCycle = 0;   // rounds of the rotation so far (shuffle seed)
+RTC_DATA_ATTR uint16_t rtcViews[rot::MAX_ENTRIES];   // 'v' pools: times each entry came up
 RTC_DATA_ATTR int32_t rtcDrawnDay = -1;
 RTC_DATA_ATTR int32_t rtcDrawnDaily = -1;   // dailyIndex() when the daily page was drawn
 RTC_DATA_ATTR int rtcPartials = 0;
 RTC_DATA_ATTR time_t rtcLastSync = 0;
 RTC_DATA_ATTR time_t rtcPageDueAt = 0;   // epoch of the next page change while sleeping
 
-int current = 0;              // rotation entry: 0..slotCount-1, slotCount = daily page
+int current = 0;              // rotation entry on screen (0..entryCount()-1)
 uint32_t lastSwitch = 0, lastActivity = 0;
 volatile bool pendingDraw = false;
 bool pendingFull = true;
@@ -147,7 +152,8 @@ void applyTz() { setenv("TZ", tz.c_str(), 1); tzset(); }
 // ---------------------------------------------------------------- storage
 String slotPath(int slot, const char* ext) { return "/f" + String(slot) + ext; }
 
-int entryCount() { return slotCount + (dailyCount > 0 ? 1 : 0); }
+int entryCount() { return rotCfg.n; }
+bool isScheduled(int entry) { return rotCfg.scheduled(entry); }
 
 // Number of the current "Pokémon of the day" period: days counted from the change
 // time (dailyAt), grouped by dailyEvery. -1 = clock not set.
@@ -160,13 +166,17 @@ int32_t dailyIndex() {
   return d >= 0 ? d / dailyEvery : -1;
 }
 
-int dailyPick(int32_t n) { return dailyPickOf(n, dailyCount, dailyShuffle); }
-
-// Rotation entry -> file slot. The daily entry picks one page of the pool per period.
-int entrySlot(int entry) {
-  if (entry < slotCount) return entry;
-  return slotCount + dailyPick(dailyIndex());
+// Page of the pool behind an entry: by the "of the day" schedule, or by views.
+int poolPick(int entry) {
+  if (entry < 0 || entry >= rotCfg.n) return 0;
+  const rot::Pool& p = rotCfg.pools[entry];
+  if (p.size <= 1) return 0;
+  if (p.mode == 'v') return rtcViews[entry] % p.size;
+  return dailyPickOf(dailyIndex(), p.size, dailyShuffle);
 }
+
+// Rotation entry -> file slot.
+int entrySlot(int entry) { return rotCfg.base(entry) + poolPick(entry); }
 
 Overlay readOverlay(int slot) {
   Overlay o{};
@@ -358,12 +368,12 @@ bool drawEntry(int entry, bool full) {
   free(planes);
   f.close();
   rtcDrawnDay = todayLocal();
-  if (entry >= slotCount) rtcDrawnDaily = dailyIndex();
+  if (isScheduled(entry)) rtcDrawnDaily = dailyIndex();
   return true;
 }
 
-void goTo(int entry) {
-  int n = entryCount();
+void showEntry(int entry) {
+  int n = max(1, entryCount());
   current = ((entry % n) + n) % n;
   rtcEntry = current;
   rtcPageDueAt = 0;
@@ -371,6 +381,28 @@ void goTo(int entry) {
   pendingDraw = true;
   pendingFull = true;
 }
+
+// Jump to an entry: the round goes on from there.
+void goTo(int entry) {
+  int n = max(1, entryCount());
+  entry = ((entry % n) + n) % n;
+  for (int p = 0; p < n; p++)
+    if (rot::orderAt(rtcCycle, p, n, orderShuffle) == entry) { rtcPos = p; break; }
+  showEntry(entry);
+}
+
+// Next / previous stop of the rotation, in order or shuffled per round. A 'v' pool
+// moves to its next page every time it comes up this way.
+int stepEntry(int by) {
+  int n = max(1, entryCount());
+  rtcPos += by;
+  if (rtcPos >= n) { rtcPos = 0; rtcCycle++; }
+  if (rtcPos < 0) { rtcPos = n - 1; if (rtcCycle) rtcCycle--; }
+  int e = rot::orderAt(rtcCycle, rtcPos, n, orderShuffle);
+  if (by > 0 && e < rot::MAX_ENTRIES && rotCfg.pools[e].size > 1 && rotCfg.pools[e].mode == 'v') rtcViews[e]++;
+  return e;
+}
+void nextEntry(int by = 1) { showEntry(stepEntry(by)); }
 
 // ---------------------------------------------------------------- timing
 // Minutes this rotation entry stays on screen (0 = no timed change).
@@ -388,6 +420,11 @@ uint32_t entryInterval(int entry) {
   }
   return intervalMin;
 }
+
+bool inQuiet(time_t t);
+// Minutes before the next page at time t: the page's own, or the night interval
+// during the quiet hours (0 = stay).
+uint32_t intervalAt(int entry, time_t t) { return inQuiet(t) ? (entryInterval(entry) ? quietIntervalMin : 0) : entryInterval(entry); }
 
 bool inQuiet(time_t t) {
   if (quietFrom < 0 || quietTo < 0 || quietFrom == quietTo || t < 1700000000) return false;
@@ -408,8 +445,8 @@ time_t quietEnd(time_t t) {
 
 // Button actions: 1 next page, 2 previous page, 3 full refresh of the current one.
 void buttonAction(uint8_t a) {
-  if (a == 1) goTo(current + 1);
-  else if (a == 2) goTo(current - 1);
+  if (a == 1) nextEntry(1);
+  else if (a == 2) nextEntry(-1);
   else if (a == 3) { pendingDraw = true; pendingFull = true; rtcPartials = 0; }
 }
 
@@ -482,16 +519,21 @@ void handleFrameDone() {
     server.send(400, "text/plain", "bad frame");
     return;
   }
-  LittleFS.remove(uploadPath + ".bin");
-  LittleFS.rename(uploadPath + ".tmp", uploadPath + ".bin");
+  const bool stage = server.arg("stage") == "1";   // kept apart until /api/rotation?commit=1
+  const String dst = uploadPath + (stage ? ".new" : ".bin");
+  LittleFS.remove(dst);
+  LittleFS.rename(uploadPath + ".tmp", dst);
   int slot = server.arg("slot").toInt();
   if (server.hasArg("ov") && server.arg("ov").length()) {
     const String ov = server.arg("ov");
     bool ok = ov.length() < 200;
     for (size_t i = 0; ok && i < ov.length(); i++) ok = isdigit((unsigned char)ov[i]) || ov[i] == ',' || ov[i] == '-' || ov[i] == ';';
     if (!ok) { server.send(400, "text/plain", "bad ov"); return; }
-    File o = LittleFS.open(slotPath(slot, ".ov"), "w");
+    File o = LittleFS.open(slotPath(slot, stage ? ".ovn" : ".ov"), "w");
     if (o) { o.print(server.arg("ov")); o.close(); }
+  } else if (stage) {
+    File o = LittleFS.open(slotPath(slot, ".ovn"), "w");   // empty = no counter box
+    if (o) o.close();
   } else {
     LittleFS.remove(slotPath(slot, ".ov"));
   }
@@ -544,6 +586,8 @@ void applySettings() {
   if (server.hasArg("dat")) { dailyAt = constrain(server.arg("dat").toInt(), 0, 1439); prefs.putInt("dat", dailyAt); }
   if (server.hasArg("dev")) { dailyEvery = constrain(server.arg("dev").toInt(), 1, 30); prefs.putInt("dev", dailyEvery); }
   if (server.hasArg("dsh")) { dailyShuffle = server.arg("dsh") == "1"; prefs.putBool("dsh", dailyShuffle); }
+  if (server.hasArg("ord")) { orderShuffle = server.arg("ord") == "1"; prefs.putBool("ord", orderShuffle); }
+  if (server.hasArg("qi")) { quietIntervalMin = constrain(server.arg("qi").toInt(), 0, 1440); prefs.putUInt("qi", quietIntervalMin); }
   applyTz();
 }
 
@@ -561,29 +605,63 @@ void handleSettings() {
   server.send(204);
 }
 
-// POST /api/rotation  count interval [daily + applySettings() fields]
+// Rotation from the old "count" + "daily" pair (firmware <= 1.7, and its saved settings).
+String legacyPools(int count, int daily) {
+  String p;
+  for (int i = 0; i < count; i++) p += i ? ",1" : "1";
+  if (daily > 0) p += (p.length() ? "," : "") + String(daily) + (daily > 1 ? "d" : "");
+  return p;
+}
+
+// Staged upload (/api/frame?stage=1) -> live: each slot that has a staged page or
+// counter box takes it; slots past the rotation are dropped.
+void commitStaged(int total) {
+  for (int s = 0; s < MAX_SLOTS; s++) {
+    const String nb = slotPath(s, ".new"), no = slotPath(s, ".ovn");
+    if (s >= total) {
+      for (const char* e : {".bin", ".ov", ".new", ".ovn"}) LittleFS.remove(slotPath(s, e));
+      continue;
+    }
+    if (LittleFS.exists(nb)) { LittleFS.remove(slotPath(s, ".bin")); LittleFS.rename(nb, slotPath(s, ".bin")); }
+    if (LittleFS.exists(no)) {
+      File f = LittleFS.open(no, "r");
+      bool empty = !f || f.size() == 0;
+      if (f) f.close();
+      LittleFS.remove(slotPath(s, ".ov"));
+      if (empty) LittleFS.remove(no); else LittleFS.rename(no, slotPath(s, ".ov"));
+    }
+  }
+}
+
+// POST /api/rotation  pools (or count [daily]) [interval commit + applySettings() fields]
 void handleRotation() {
   touch();
   if (!authorized()) return;
-  int count = server.arg("count").toInt();
   long interval = server.hasArg("interval") ? server.arg("interval").toInt() : (long)intervalMin;
-  int daily = server.hasArg("daily") ? server.arg("daily").toInt() : 0;
-  if (count < 1 || daily < 0 || count + daily > MAX_SLOTS || interval < 0 || interval > 24 * 60) {
+  String spec = server.hasArg("pools") ? server.arg("pools")
+              : legacyPools(server.arg("count").toInt(), server.hasArg("daily") ? server.arg("daily").toInt() : 0);
+  rot::Rotation r;
+  if (spec.length() > 240 || !rot::parse(spec.c_str(), r, MAX_SLOTS) || interval < 0 || interval > 24 * 60) {
     server.send(400, "text/plain", "bad rotation");
     return;
   }
-  slotCount = count;
-  dailyCount = daily;
+  rotCfg = r;
+  char buf[256];
+  rot::format(rotCfg, buf, sizeof buf);
+  prefs.putString("pools", buf);
   applySettings();
   intervalMin = (uint32_t)interval;
   prefs.putUInt("interval", intervalMin);
-  prefs.putInt("count", slotCount);
-  prefs.putInt("daily", dailyCount);
-  for (int s = slotCount + dailyCount; s < MAX_SLOTS; s++) {   // drop pages no longer used
-    LittleFS.remove(slotPath(s, ".bin"));
-    LittleFS.remove(slotPath(s, ".ov"));
-  }
-  goTo(0);  // reply now, refresh in loop(): a B/W/R refresh takes ~16 s
+  if (server.arg("commit") == "1") commitStaged(rotCfg.totalSlots());
+  else
+    for (int s = rotCfg.totalSlots(); s < MAX_SLOTS; s++) {   // drop pages no longer used
+      LittleFS.remove(slotPath(s, ".bin"));
+      LittleFS.remove(slotPath(s, ".ov"));
+    }
+  memset(rtcViews, 0, sizeof rtcViews);
+  rtcCycle = 0;
+  goTo(rot::orderAt(0, 0, entryCount(), orderShuffle));  // reply now, refresh in loop(): a B/W/R refresh takes ~16 s
+  rtcPos = 0;
   server.send(202);
 }
 
@@ -623,7 +701,7 @@ void handlePages() {
   touch();
   String j = "[";
   static uint8_t buf[1024];
-  for (int s = 0; s < slotCount + dailyCount; s++) {
+  for (int s = 0; s < rotCfg.totalSlots(); s++) {
     File f = LittleFS.open(slotPath(s, ".bin"), "r");
     if (!f) continue;
     uint32_t crc = 0;
@@ -640,6 +718,11 @@ void handlePages() {
   server.send(200, "application/json", j + "]");
 }
 
+String poolsString() { char b[256]; rot::format(rotCfg, b, sizeof b); return b; }
+// For web UIs up to 1.7: plain pages, then the Pokémon of the day pool.
+int legacyDaily() { int n = rotCfg.n; return n && rotCfg.pools[n - 1].size > 1 ? rotCfg.pools[n - 1].size : 0; }
+int legacyCount() { return rotCfg.n - (legacyDaily() ? 1 : 0); }
+
 uint32_t sketchSize() { static uint32_t n = ESP.getSketchSize(); return n; }   // reads the image once
 
 void handleInfo() {
@@ -648,11 +731,15 @@ void handleInfo() {
   String j = "{\"w\":" + String(W) + ",\"h\":" + String(H) +
              ",\"red\":" + (panelHasInk(2) ? "true" : "false") +
              ",\"api\":" + String(API_LEVEL) +
-             ",\"features\":\"pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh\"" +
+             ",\"features\":\"pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh,pools,stage,prev\"" +
              ",\"dailyAt\":" + String(dailyAt) + ",\"dailyEvery\":" + String(dailyEvery) +
              ",\"dailyShuffle\":" + (dailyShuffle ? "true" : "false") +
              ",\"dailyIndex\":" + String(dailyIndex()) +
-             ",\"dailyPick\":" + String(dailyCount > 0 ? dailyPick(dailyIndex()) : -1) +
+             ",\"pools\":\"" + poolsString() + "\"" +
+             ",\"order\":\"" + (orderShuffle ? "shuffle" : "seq") + "\"" +
+             ",\"quietInterval\":" + String(quietIntervalMin) +
+             ",\"pending\":" + (pendingDraw || busy ? "true" : "false") +
+             ",\"freeBytes\":" + String((long)LittleFS.totalBytes() - (long)LittleFS.usedBytes()) +
              ",\"sleepOn\":" + (sleepEnabled ? "true" : "false") +
              ",\"intervalMin\":" + String(intervalMin) +
              ",\"batLowMv\":" + String(batLowMv) + ",\"fullEvery\":" + String(fullEvery) +
@@ -667,8 +754,8 @@ void handleInfo() {
              ",\"pageBudget\":" + String(pageBudget()) +
              ",\"maxSlots\":" + String(MAX_SLOTS) +
              ",\"slotsFit\":" + String(slotsFit()) +
-             ",\"count\":" + String(slotCount) +
-             ",\"daily\":" + String(dailyCount) +
+             ",\"count\":" + String(legacyCount()) +
+             ",\"daily\":" + String(legacyDaily()) +
              ",\"entries\":" + String(entryCount()) +
              ",\"current\":" + String(current) +
              ",\"interval\":" + String(intervalMin) +
@@ -1024,7 +1111,7 @@ void factoryReset() {
     for (File f = sd.openNextFile(); f; f = sd.openNextFile()) gone.push_back(String(f.path()));
   for (const String& p : gone) LittleFS.remove(p);
   rtcDrawnDay = -1;
-  rtcEntry = 0;
+  rtcEntry = 0; rtcPos = 0; rtcCycle = 0;
 }
 
 void forgetNetwork() {
@@ -1058,8 +1145,16 @@ void startServer() {
     if (!authorized()) return;
     rtcPartials = 0; pendingDraw = true; pendingFull = true; server.send(202);
   });
-  server.on("/api/next", HTTP_POST, [] { touch(); if (authorized()) { goTo(current + 1); server.send(202); } });
-  server.on("/api/show", HTTP_POST, [] { touch(); if (authorized()) { goTo(server.arg("slot").toInt()); server.send(202); } });
+  server.on("/api/next", HTTP_POST, [] { touch(); if (authorized()) { nextEntry(1); server.send(202); } });
+  server.on("/api/prev", HTTP_POST, [] { touch(); if (authorized()) { nextEntry(-1); server.send(202); } });
+  server.on("/api/show", HTTP_POST, [] {
+    touch();
+    if (!authorized()) return;
+    int e = server.arg("slot").toInt();
+    if (e < 0 || e >= entryCount()) { server.send(400, "text/plain", "no such entry"); return; }
+    goTo(e);
+    server.send(202);
+  });
   server.on("/api/ota", HTTP_POST, handleOtaDone, handleOtaUpload);
   server.on("/api/fs", HTTP_GET, handleFsList);
   server.on("/api/fs", HTTP_POST, handleFsDone, handleFsUpload);
@@ -1119,8 +1214,8 @@ uint64_t secondsToNextWake() {
   uint32_t iv = entryInterval(current);
   if (iv > 0 && entryCount() > 1) {
     time_t now = time(nullptr);
-    if (rtcPageDueAt <= now) rtcPageDueAt = now + iv * 60;
-    rtcPageDueAt = quietEnd(rtcPageDueAt);      // no page change during the quiet hours
+    if (rtcPageDueAt <= now) rtcPageDueAt = now + (uint32_t)(inQuiet(now) && quietIntervalMin ? quietIntervalMin : iv) * 60;
+    if (!quietIntervalMin) rtcPageDueAt = quietEnd(rtcPageDueAt);   // no page change during the quiet hours
     s = rtcPageDueAt > now ? rtcPageDueAt - now : 1;
   }
   // midnight: the counter changes; the Pokémon of the day changes at its own time
@@ -1131,7 +1226,7 @@ uint64_t secondsToNextWake() {
     long secOfDay = lt.tm_hour * 3600L + lt.tm_min * 60L + lt.tm_sec;
     auto until = [&](long at) -> uint64_t { long d = at - secOfDay; if (d <= 0) d += 24 * 3600L; return (uint64_t)d + 60; };
     if (readOverlay(entrySlot(current)).ok) { uint64_t m = until(0); if (s == 0 || m < s) s = m; }
-    if (current >= slotCount && dailyCount > 1) { uint64_t m = until(dailyAt * 60L); if (s == 0 || m < s) s = m; }
+    if (isScheduled(current)) { uint64_t m = until(dailyAt * 60L); if (s == 0 || m < s) s = m; }
   }
   return s;   // 0 = no timer, button only
 }
@@ -1152,8 +1247,14 @@ void goToSleep() {
 // ---------------------------------------------------------------- main
 void loadConfig() {
   prefs.begin("dexframe", false);
-  slotCount = constrain(prefs.getInt("count", 1), 1, MAX_SLOTS);
-  dailyCount = constrain(prefs.getInt("daily", 0), 0, MAX_SLOTS - slotCount);
+  String spec = prefs.getString("pools", "");
+  if (!spec.length()) {                              // settings saved by firmware <= 1.7
+    int count = constrain(prefs.getInt("count", 1), 1, MAX_SLOTS);
+    spec = legacyPools(count, constrain(prefs.getInt("daily", 0), 0, MAX_SLOTS - count));
+  }
+  if (!rot::parse(spec.c_str(), rotCfg, MAX_SLOTS)) rot::parse("1", rotCfg, MAX_SLOTS);
+  orderShuffle = prefs.getBool("ord", false);
+  quietIntervalMin = constrain(prefs.getUInt("qi", 0), 0u, 1440u);
   intervalMin = min(prefs.getUInt("interval", 10), 24u * 60);
   sleepEnabled = prefs.getBool("sleep", false);
   awakeMin = constrain(prefs.getUInt("awake", 3), 1u, 60u);
@@ -1185,12 +1286,15 @@ void setup() {
   lastBoot = digitalRead(BTN_BOOT);
   lastWake = digitalRead(BTN_WAKE);         // a button still held after waking is not a new press
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
+  for (int s = 0; s < MAX_SLOTS; s++)                // a send that stopped halfway: drop it
+    for (const char* e : {".new", ".ovn", ".tmp"}) if (LittleFS.exists(slotPath(s, e))) LittleFS.remove(slotPath(s, e));
   loadConfig();
   loadGlyphs();
   display.init(115200, true, 2, false);
 
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   current = rtcEntry < entryCount() ? rtcEntry : 0;
+  if (rtcPos >= entryCount()) rtcPos = 0;
 
   if (sleepEnabled && cause == ESP_SLEEP_WAKEUP_TIMER) {
     // Quiet wake: no WiFi, unless the clock needs a daily NTP resync.
@@ -1203,13 +1307,13 @@ void setup() {
     // The RTC keeps system time across deep sleep: the interval elapsed -> next page,
     // otherwise this is the midnight wake that only updates the day counter.
     bool pageDue = entryInterval(current) > 0 && entryCount() > 1 && time(nullptr) + 30 >= rtcPageDueAt &&
-                   !inQuiet(time(nullptr) + 30);
+                   (!inQuiet(time(nullptr) + 30) || quietIntervalMin);
     if (pageDue) {
-      current = (current + 1) % entryCount();
+      current = stepEntry(1);
       rtcEntry = current;
       rtcPageDueAt = 0;
       drawEntry(current, true);
-    } else if (current >= slotCount && dailyIndex() != rtcDrawnDaily) {
+    } else if (isScheduled(current) && dailyIndex() != rtcDrawnDaily) {
       drawEntry(current, true);    // a new Pokémon of the day
     } else if (todayLocal() != rtcDrawnDay && readOverlay(entrySlot(current)).ok) {
       drawEntry(current, false);   // same page, refresh the day counter
@@ -1220,7 +1324,7 @@ void setup() {
   }
 
   if (cause == ESP_SLEEP_WAKEUP_EXT0) {   // button: next page right away, then go online
-    current = (current + 1) % entryCount();
+    current = stepEntry(1);
     rtcEntry = current;
     pendingDraw = true;
   } else if (cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
@@ -1281,10 +1385,8 @@ void loop() {
   }
   if (clickAt && millis() - clickAt >= 450) { clickAt = 0; buttonAction(1); }   // no second click came
 
-  uint32_t iv = entryInterval(current);
-  if (iv > 0 && entryCount() > 1 && millis() - lastSwitch >= iv * 60000UL && !inQuiet(time(nullptr))) {
-    goTo(current + 1);
-  }
+  uint32_t iv = intervalAt(current, time(nullptr));
+  if (iv > 0 && entryCount() > 1 && millis() - lastSwitch >= iv * 60000UL) nextEntry(1);
 
   // New day: refresh the counter on the page shown (partial on B/W).
   static uint32_t lastDayCheck = 0;
@@ -1292,7 +1394,7 @@ void loop() {
     lastDayCheck = millis();
     int32_t today = todayLocal();
     if (today >= 0 && !pendingDraw && !busy) {
-      if (current >= slotCount && dailyCount > 0 && dailyIndex() != rtcDrawnDaily) {
+      if (isScheduled(current) && dailyIndex() != rtcDrawnDaily) {
         pendingDraw = true; pendingFull = true;          // a new Pokémon of the day
       } else if (today != rtcDrawnDay) {
         if (readOverlay(entrySlot(current)).ok) { pendingDraw = true; pendingFull = false; }   // counter: partial on B/W

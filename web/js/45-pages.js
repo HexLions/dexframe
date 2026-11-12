@@ -374,8 +374,9 @@ const textOn = css => css === '#ff0' || css === '#f80' || css === '#0f0' ? BLACK
 async function renderPage(key, s = state, idx, total, part = 0) {
   const hasRed = hasInk(s, 'red'), acc = accent(s);
   if (idx == null) {
-    total = totalEntries();
-    idx = key === 'daily' ? total - 1 : rotation().findIndex(e => e.key === key && (e.part || 0) === part && (e.s === s || sameCard(e.s, s)));
+    const plan = rotationPlan();
+    total = plan.length;
+    idx = key === 'daily' ? total - 1 : plan.findIndex(e => e.key === key && e.part === part && e.jobs.some(j => j.s === s || sameCard(j.s, s)));
   }
   if (part) s = {...s, _part: part};
   const page = PAGES[key];

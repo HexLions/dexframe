@@ -44,45 +44,52 @@ function crc32(bytes) {
 const minutesOf = hhmm => { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : -1; };
 const overlayArg = o => o ? [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep, o.mode || 0, o.scale || 1].join(',') : '';
 
-// Frames go to slots 0..n-1 (rotation), then the daily pool; then the rotation settings.
+// Pages go to slots in rotation order (each entry's pool in a row), then the rotation.
+// With firmware 2.0 they are uploaded to a staging copy and switched over by the last
+// call (/api/rotation?commit=1): a send that stops halfway leaves the old pages working.
 async function sendAll() {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
-  const entries = rotation();
-  if (!entries.length) { setStatus(t('st_no_pages')); return; }
-  const daily = state.pg_daily ? dailyIds() : [];
+  const plan = rotationPlan();
+  if (!plan.length) { setStatus(t('st_no_pages')); return; }
   if ((deviceInfo.w ?? W) !== W || (deviceInfo.h ?? H) !== H) { setStatus(t('st_size', {w: W, h: H, pw: deviceInfo.w, ph: deviceInfo.h})); return; }
   const dxf = deviceInfo.api >= 2;     // older firmware: raw two-plane pages, fixed size
   const feat = String(deviceInfo.features || '').split(',');
-  const total = entries.length + daily.length, max = dxf ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8;
-  if (total > max) { setStatus(t('st_too_many', {n: total, m: max})); return; }
-  const dots = entries.length + (daily.length ? 1 : 0);
+  const pools = feat.includes('pools');
+  if (!pools && plan.some(e => e.jobs.length > 1 && e.key !== 'daily')) { setStatus(t('st_old_pools')); return; }
+  const jobs = plan.flatMap((e, idx) => e.jobs.map(j => ({...j, idx})));
+  const max = dxf ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8;
+  if (jobs.length > max) { setStatus(t('st_too_many', {n: jobs.length, m: max})); return; }
+  const dots = plan.length;
   let note = '';
   try {
-    const jobs = [...entries.map((e, i) => [e.key, e.s, i, e.part || 0]),
-      ...daily.map((id, k) => ['daily', {...state, _dailyId: id}, dots - 1, 0])];
     // Render everything first, a few pages at a time (sprites and PokeAPI data load in
     // parallel): compressed pages differ in size, so check they all fit before sending.
     const bpp = paletteBpp(panelOf(state).palette), frames = new Array(jobs.length);
     let next = 0, done = 0;
     await Promise.all(Array.from({length: Math.min(4, jobs.length)}, async () => {
       while (next < jobs.length) {
-        const i = next++, [key, s, idx, part] = jobs[i];
-        const ink = await renderPage(key, s, idx, dots, part);
+        const i = next++, j = jobs[i];
+        const ink = await renderPage(j.key, j.s, j.idx, dots, j.part);
         const data = dxf ? encodeFrame(ink, W, H, bpp) : pack(ink);
         frames[i] = {data, ov: overlayArg(ink.overlay), crc: crc32(data)};
         setStatus(t('st_rendering', {i: ++done, n: jobs.length}));
       }
     }));
     const bytes = frames.reduce((a, f) => a + f.data.length, 0);
-    if (dxf) {
-      const blk = n => Math.ceil(n / 4096) * 4096;     // on flash: whole blocks, +1 for the counter box, +1 upload in progress
-      const need = frames.reduce((a, f) => a + blk(f.data.length) + 4096, 0) + blk(Math.max(...frames.map(f => f.data.length)));
-      if (need > deviceInfo.pageBudget) { setStatus(t('st_too_big', {n: Math.ceil(need / 1024), m: Math.floor(deviceInfo.pageBudget / 1024)})); return; }
-    }
     // pages the board already holds, byte for byte, are not sent again
     let have = new Map();
     if (feat.includes('pages')) {
       try { have = new Map((await (await fetch(api('/api/pages'), {cache: 'no-store'})).json()).map(p => [p.slot, p])); } catch {}
+    }
+    const same = (f, i) => { const h = have.get(i); return h && h.size === f.data.length && (h.crc >>> 0) === f.crc && String(h.ov || '') === f.ov; };
+    const blk = n => Math.ceil(n / 4096) * 4096;     // on flash: whole blocks, +1 for the counter box
+    let stage = false;
+    if (dxf) {
+      const need = frames.reduce((a, f) => a + blk(f.data.length) + 4096, 0) + blk(Math.max(...frames.map(f => f.data.length)));
+      if (need > deviceInfo.pageBudget) { setStatus(t('st_too_big', {n: Math.ceil(need / 1024), m: Math.floor(deviceInfo.pageBudget / 1024)})); return; }
+      // staging keeps old and new pages side by side until the switch: only if they fit
+      const changed = frames.reduce((a, f, i) => a + (same(f, i) ? 0 : blk(f.data.length) + 4096), 0);
+      stage = feat.includes('pools') && deviceInfo.freeBytes != null && changed + 16384 < deviceInfo.freeBytes;
     }
     setStatus(t('st_glyphs'));
     const gd = new FormData();
@@ -92,41 +99,66 @@ async function sendAll() {
     else if (!gr.ok) throw new Error(`glyphs: HTTP ${gr.status}`);
     let skipped = 0;
     for (let i = 0; i < frames.length; i++) {
-      const f = frames[i], h = have.get(i);
-      if (h && h.size === f.data.length && (h.crc >>> 0) === f.crc && String(h.ov || '') === f.ov) { skipped++; continue; }
+      const f = frames[i];
+      if (same(f, i)) { skipped++; continue; }
       setStatus(t('st_sending', {i: i + 1, n: frames.length}));
       const fd = new FormData();
       fd.append('frame', new Blob([f.data], {type: 'application/octet-stream'}), 'frame.bin');
-      const r = await fetch(api(`/api/frame?slot=${i}${f.ov ? '&ov=' + f.ov : ''}`), {method: 'POST', body: fd});
+      const r = await fetch(api(`/api/frame?slot=${i}${stage ? '&stage=1' : ''}${f.ov ? '&ov=' + f.ov : ''}`), {method: 'POST', body: fd});
       if (!r.ok) throw new Error(`${t('st_page', {i: i + 1})}: HTTP ${r.status}`);
     }
     note = ' · ' + t('st_sent_kb', {kb: Math.ceil(bytes / 1024)}) + (skipped ? ' · ' + t('st_skipped', {n: skipped}) : '') + note;
     const mins = k => Math.max(0, Math.round(Number((state.pageMin || {})[k]) || 0));
-    const body = new URLSearchParams({count: entries.length, interval: Math.max(0, Number(state.interval) || 0),
-      daily: daily.length, sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
+    const daily = plan.at(-1)?.key === 'daily' ? plan.at(-1).jobs.length : 0;
+    const body = new URLSearchParams({
+      ...(pools ? {pools: poolsSpec(plan)} : {count: plan.length - (daily ? 1 : 0), daily}),
+      ...(stage ? {commit: 1} : {}),
+      interval: Math.max(0, Number(state.interval) || 0),
+      sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
       tz: state.tz || DEFAULTS.tz, now: Math.floor(Date.now() / 1000),
       qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
-      iv: [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(','),
+      iv: plan.map(e => mins(e.key)).join(','),
       flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
       batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10)),
-      ...dailySettings()});
+      ...dailySettings(), ...orderSettings()});
     const r = await fetch(api('/api/rotation'), {method: 'POST', body});
     if (!r.ok) throw new Error(`${t('st_rotation')}: HTTP ${r.status}`);
     await saveState(true);
-    setStatus(t('st_sent', {n: jobs.length}) + note);
+    const msg = t('st_sent', {n: jobs.length}) + note;
+    setStatus(msg);
+    if (pools) waitForDisplay(msg);
   } catch (e) { setStatus(t('st_send_fail', {e: e.message})); }
 }
 
 // Puts one page of the rotation on the e-paper now (POST /api/show?slot=<rotation entry>).
 // Only when the board holds the rotation listed here: otherwise the numbers differ.
-async function showOnDevice(key, part = 0) {
+async function showOnDevice(key, part = 0, sub = 0) {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
-  const entries = rotation(), daily = state.pg_daily ? 1 : 0;
-  if (deviceInfo.count !== entries.length || Boolean(deviceInfo.daily) !== Boolean(daily)) { setStatus(t('st_show_stale')); return; }
-  const idx = key == null ? -1 : key === 'daily' ? entries.length : rotationIndex(key, part);
+  if (!boardMatches()) { setStatus(t('st_show_stale')); return; }
+  const idx = key == null ? -1 : rotationIndex(key, part, sub);
   if (idx < 0) { setStatus(t('st_show_none')); return; }
   const r = await fetch(api('/api/show?slot=' + idx), {method: 'POST'}).catch(() => null);
-  setStatus(r?.ok ? t('st_show', {p: t('pg_' + key) + (pageParts(key) > 1 ? ' ' + (part + 1) : '')}) : t('st_err', {e: r ? r.status : 'network'}));
+  const label = t('pg_' + key) + (pageParts(key) > 1 ? ' ' + (part + 1) : '');
+  setStatus(r?.ok ? t('st_show', {p: label}) : t('st_err', {e: r ? r.status : 'network'}));
+  if (r?.ok) waitForDisplay(t('st_show', {p: label}));
+}
+
+// The board draws after replying (a B/W/R refresh takes ~16 s and blocks it): ask
+// /api/info until nothing is pending, then say so.
+async function waitForDisplay(prefix) {
+  const t0 = Date.now();
+  await new Promise(r => setTimeout(r, 1200));
+  while (Date.now() - t0 < 60000) {
+    try {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 25000);
+      const i = await (await fetch(api('/api/info'), {cache: 'no-store', signal: ctl.signal})).json();
+      clearTimeout(to);
+      deviceInfo = i;
+      if (!i.pending) { setStatus(prefix + ' · ' + t('st_idle', {s: Math.round((Date.now() - t0) / 1000)})); renderPowerBox(); return; }
+    } catch {}
+    setStatus(prefix + ' · ' + t('st_drawing'));
+    await new Promise(r => setTimeout(r, 1500));
+  }
 }
 
 async function nextOnDevice() {

@@ -462,6 +462,7 @@ const DEFAULTS = {
   quietOn:false, quietFrom:'23:00', quietTo:'07:00', flip:false, btnDouble:0, btnLong:0, batLow:3.5, fullEvery:10,
   pageStyle:'classic', previewPanel:'',
   frame:'none', pageFrame:{}, frameImg:'', dailyAt:'00:00', dailyEvery:1, dailyShuffle:false,
+  orderShuffle:false, quietInterval:0,
 };
 
 const typeOpts = (blank) => () => [...(blank ? [['', '—']] : []), ...TYPE_KEYS.map(k => [k, typeName(k, state.uiLang)])];
@@ -493,7 +494,8 @@ const GROUPS = [
     ['previewPanel','previewPanel','select',() => [['', t('pv_same')], ...Object.keys(PANELS).map(k => [k, panelLabel(k)])]]]],
   // battery, refresh and timing; the Pokémon of the day pool and its schedule (box: buildPowerBox)
   ['power', [['interval','interval','number'],['fullEvery','fullEvery','number'],
-    ['quietOn','quietOn','checkbox','wide'],['quietFrom','quietFrom','time'],['quietTo','quietTo','time'],
+    ['quietOn','quietOn','checkbox','wide'],['quietFrom','quietFrom','time'],['quietTo','quietTo','time'],['quietInterval','quietInterval','number'],
+    ['orderShuffle','orderShuffle','checkbox','wide'],
     ['sleep','sleep','checkbox','wide'],['awake','awake','number'],['batLow','batLow','number'],
     ['dailyCount','dailyCount','number'],['dailyAt','dailyAt','time'],['dailyEvery','dailyEvery','number'],
     ['dailyShuffle','dailyShuffle','checkbox','wide']]],
@@ -1072,30 +1074,50 @@ Object.assign(UI.de, {
 });
 // ---------- i18n: 2.0 ----------
 Object.assign(UI.it, {
+  orderShuffle: 'Ordine casuale delle pagine (nuovo a ogni giro, senza ripetere la stessa due volte di fila)',
+  quietInterval: 'Di notte: cambio pagina ogni N minuti (0 = ferma)',
+  st_idle: 'schermo aggiornato ({s} s)', st_drawing: 'lo schermo si sta aggiornando…',
+  st_old_pools: 'Queste pagine richiedono il firmware 2.0: aggiornalo da Sistema',
   show_dev: 'Mostra sul display', pg_show: 'Mostra subito questa pagina sul display',
   st_show: 'Sul display: {p}', st_show_stale: 'Il display ha altre pagine: premi prima "Invia tutte le pagine"',
   st_show_none: 'Questa pagina non è nella rotazione',
   sy_fw_part: 'Questa scheda ha la vecchia tabella delle partizioni: per avere lo spazio della 2.0 serve un flash completo (file factory o installer web).',
 });
 Object.assign(UI.en, {
+  orderShuffle: 'Pages in random order (a new one every round, never the same page twice in a row)',
+  quietInterval: 'At night: change page every N minutes (0 = stay)',
+  st_idle: 'screen updated ({s} s)', st_drawing: 'the screen is updating…',
+  st_old_pools: 'These pages need firmware 2.0: update it from System',
   show_dev: 'Show on the display', pg_show: 'Show this page on the display now',
   st_show: 'On the display: {p}', st_show_stale: 'The display holds other pages: press "Send all pages" first',
   st_show_none: 'This page is not in the rotation',
   sy_fw_part: 'This board has the old partition table: to get the 2.0 space it needs a full flash (factory file or web installer).',
 });
 Object.assign(UI.es, {
+  orderShuffle: 'Páginas en orden aleatorio (uno nuevo en cada vuelta, nunca la misma página dos veces seguidas)',
+  quietInterval: 'De noche: cambiar de página cada N minutos (0 = quieta)',
+  st_idle: 'pantalla actualizada ({s} s)', st_drawing: 'la pantalla se está actualizando…',
+  st_old_pools: 'Estas páginas necesitan el firmware 2.0: actualízalo desde Sistema',
   show_dev: 'Mostrar en la pantalla', pg_show: 'Mostrar ahora esta página en la pantalla',
   st_show: 'En la pantalla: {p}', st_show_stale: 'La pantalla tiene otras páginas: pulsa antes "Enviar todas las páginas"',
   st_show_none: 'Esta página no está en la rotación',
   sy_fw_part: 'Esta placa tiene la tabla de particiones antigua: para tener el espacio de la 2.0 hace falta un flasheo completo (archivo factory o instalador web).',
 });
 Object.assign(UI.fr, {
+  orderShuffle: 'Pages dans un ordre aléatoire (nouveau à chaque tour, jamais la même page deux fois de suite)',
+  quietInterval: 'La nuit : changer de page toutes les N minutes (0 = fixe)',
+  st_idle: 'écran mis à jour ({s} s)', st_drawing: 'l\'écran se met à jour…',
+  st_old_pools: 'Ces pages nécessitent le firmware 2.0 : mettez-le à jour depuis Système',
   show_dev: 'Afficher sur l\'écran', pg_show: 'Afficher cette page sur l\'écran maintenant',
   st_show: 'Sur l\'écran : {p}', st_show_stale: 'L\'écran contient d\'autres pages : appuyez d\'abord sur « Envoyer toutes les pages »',
   st_show_none: 'Cette page n\'est pas dans la rotation',
   sy_fw_part: 'Cette carte a l\'ancienne table de partitions : pour avoir l\'espace de la 2.0, il faut un flash complet (fichier factory ou installateur web).',
 });
 Object.assign(UI.de, {
+  orderShuffle: 'Seiten in zufälliger Reihenfolge (jede Runde neu, nie zweimal hintereinander dieselbe Seite)',
+  quietInterval: 'Nachts: Seite alle N Minuten wechseln (0 = bleibt)',
+  st_idle: 'Bildschirm aktualisiert ({s} s)', st_drawing: 'der Bildschirm wird aktualisiert…',
+  st_old_pools: 'Diese Seiten brauchen Firmware 2.0: über System aktualisieren',
   show_dev: 'Auf dem Display zeigen', pg_show: 'Diese Seite jetzt auf dem Display zeigen',
   st_show: 'Auf dem Display: {p}', st_show_stale: 'Das Display hat andere Seiten: zuerst „Alle Seiten senden“ drücken',
   st_show_none: 'Diese Seite ist nicht in der Rotation',
@@ -2069,9 +2091,32 @@ function rotation() {
     if (!sameCard(card.data, state)) entries.push({key: 'cover', s: {...state, ...card.data}, card});
   return entries;
 }
-const totalEntries = () => rotation().length + (state.pg_daily ? 1 : 0);
-const rotationIndex = (key, part = 0) => key === 'daily' ? totalEntries() - 1 : rotation().findIndex(e => e.key === key && e.s === state && (e.part || 0) === part);
 
+// ---------- the rotation as the board stores it ----------
+// One entry per stop of the rotation; behind each entry a pool of pages (include/rotation.h):
+//   mode 'd'  the page changes with the "of the day" schedule (Energy & updates)
+//   mode 'v'  the next page of the pool every time the entry comes up
+// Pages that need a pool register a builder here: key -> (s) => [{mode, jobs:[{key, s, part}]}, …]
+const POOL_PAGES = {};
+
+function rotationPlan(s0 = state) {
+  const plan = [];
+  for (const e of rotation()) {
+    const make = POOL_PAGES[e.key];
+    if (make && !e.card) for (const pool of make(e.s)) plan.push({key: e.key, part: e.part || 0, mode: pool.mode || 'd', jobs: pool.jobs, sub: pool.sub || 0});
+    else plan.push({key: e.key, part: e.part || 0, mode: 'd', jobs: [{key: e.key, s: e.s, part: e.part || 0}], card: e.card});
+  }
+  if (s0.pg_daily) plan.push({key: 'daily', part: 0, mode: 'd', jobs: dailyIds(s0).map(id => ({key: 'daily', s: {...s0, _dailyId: id}, part: 0}))});
+  return plan;
+}
+// "1,1,7d,5v": what /api/rotation?pools= expects, and /api/info reports back
+const poolsSpec = plan => plan.map(e => e.jobs.length + (e.jobs.length > 1 ? e.mode : '')).join(',');
+const totalEntries = () => rotationPlan().length;
+const rotationIndex = (key, part = 0, sub = 0) => rotationPlan().findIndex(e => e.key === key && e.part === part && (e.sub || 0) === sub && !e.card);
+// The board holds the rotation listed here (same entries and pool sizes)?
+const boardMatches = () => !!deviceInfo && (deviceInfo.pools != null
+  ? deviceInfo.pools === poolsSpec(rotationPlan())
+  : deviceInfo.count === rotation().length && Boolean(deviceInfo.daily) === Boolean(state.pg_daily));
 // ---------- pages (400x300) ----------
 const PAGES = {
   cover: {
@@ -2448,8 +2493,9 @@ const textOn = css => css === '#ff0' || css === '#f80' || css === '#0f0' ? BLACK
 async function renderPage(key, s = state, idx, total, part = 0) {
   const hasRed = hasInk(s, 'red'), acc = accent(s);
   if (idx == null) {
-    total = totalEntries();
-    idx = key === 'daily' ? total - 1 : rotation().findIndex(e => e.key === key && (e.part || 0) === part && (e.s === s || sameCard(e.s, s)));
+    const plan = rotationPlan();
+    total = plan.length;
+    idx = key === 'daily' ? total - 1 : plan.findIndex(e => e.key === key && e.part === part && e.jobs.some(j => j.s === s || sameCard(j.s, s)));
   }
   if (part) s = {...s, _part: part};
   const page = PAGES[key];
@@ -3072,7 +3118,7 @@ function renderCollection() {
   if (!$('colbox')) return;
   const list = state.collection || [];
   const max = deviceInfo ? (deviceInfo.api >= 2 ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8) : 28;
-  $('colInfo').textContent = t('col_info', {n: list.length, p: rotation().length, d: state.pg_daily ? dailyN() : 0, m: max});
+  $('colInfo').textContent = t('col_info', {n: list.length, p: rotationPlan().length, d: state.pg_daily ? dailyN() : 0, m: max});
   const btn = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = fn; return b; };
   const commit = next => { state.collection = next; renderCollection(); buildTabs(); scheduleRender(); saveState(true); };
   const rows = list.map((card, i) => {
@@ -3205,10 +3251,11 @@ function lipoPercent(mv) {
 }
 
 const dailySettings = (s = state) => ({dat: dailyAtOf(s), dev: dailyEveryOf(s), dsh: s.dailyShuffle ? 1 : 0});
+const orderSettings = (s = state) => ({ord: s.orderShuffle ? 1 : 0, qi: Math.max(0, Math.round(Number(s.quietInterval) || 0))});
 
 // The rotation settings that make sense without sending the pages again.
 function settingsBody() {
-  const entries = rotation(), daily = state.pg_daily ? dailyIds() : [];
+  const plan = rotationPlan();
   const mins = k => Math.max(0, Math.round(Number((state.pageMin || {})[k]) || 0));
   const body = {interval: Math.max(0, Number(state.interval) || 0),
     sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
@@ -3216,10 +3263,9 @@ function settingsBody() {
     qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
     flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
     batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10)),
-    ...dailySettings()};
+    ...dailySettings(), ...orderSettings()};
   // per-page minutes only when the pages on the board are the ones listed here
-  if (deviceInfo && deviceInfo.count === entries.length && (deviceInfo.daily || 0) === daily.length)
-    body.iv = [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(',');
+  if (boardMatches()) body.iv = plan.map(e => mins(e.key)).join(',');
   return new URLSearchParams(body);
 }
 
@@ -4091,45 +4137,52 @@ function crc32(bytes) {
 const minutesOf = hhmm => { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : -1; };
 const overlayArg = o => o ? [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep, o.mode || 0, o.scale || 1].join(',') : '';
 
-// Frames go to slots 0..n-1 (rotation), then the daily pool; then the rotation settings.
+// Pages go to slots in rotation order (each entry's pool in a row), then the rotation.
+// With firmware 2.0 they are uploaded to a staging copy and switched over by the last
+// call (/api/rotation?commit=1): a send that stops halfway leaves the old pages working.
 async function sendAll() {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
-  const entries = rotation();
-  if (!entries.length) { setStatus(t('st_no_pages')); return; }
-  const daily = state.pg_daily ? dailyIds() : [];
+  const plan = rotationPlan();
+  if (!plan.length) { setStatus(t('st_no_pages')); return; }
   if ((deviceInfo.w ?? W) !== W || (deviceInfo.h ?? H) !== H) { setStatus(t('st_size', {w: W, h: H, pw: deviceInfo.w, ph: deviceInfo.h})); return; }
   const dxf = deviceInfo.api >= 2;     // older firmware: raw two-plane pages, fixed size
   const feat = String(deviceInfo.features || '').split(',');
-  const total = entries.length + daily.length, max = dxf ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8;
-  if (total > max) { setStatus(t('st_too_many', {n: total, m: max})); return; }
-  const dots = entries.length + (daily.length ? 1 : 0);
+  const pools = feat.includes('pools');
+  if (!pools && plan.some(e => e.jobs.length > 1 && e.key !== 'daily')) { setStatus(t('st_old_pools')); return; }
+  const jobs = plan.flatMap((e, idx) => e.jobs.map(j => ({...j, idx})));
+  const max = dxf ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8;
+  if (jobs.length > max) { setStatus(t('st_too_many', {n: jobs.length, m: max})); return; }
+  const dots = plan.length;
   let note = '';
   try {
-    const jobs = [...entries.map((e, i) => [e.key, e.s, i, e.part || 0]),
-      ...daily.map((id, k) => ['daily', {...state, _dailyId: id}, dots - 1, 0])];
     // Render everything first, a few pages at a time (sprites and PokeAPI data load in
     // parallel): compressed pages differ in size, so check they all fit before sending.
     const bpp = paletteBpp(panelOf(state).palette), frames = new Array(jobs.length);
     let next = 0, done = 0;
     await Promise.all(Array.from({length: Math.min(4, jobs.length)}, async () => {
       while (next < jobs.length) {
-        const i = next++, [key, s, idx, part] = jobs[i];
-        const ink = await renderPage(key, s, idx, dots, part);
+        const i = next++, j = jobs[i];
+        const ink = await renderPage(j.key, j.s, j.idx, dots, j.part);
         const data = dxf ? encodeFrame(ink, W, H, bpp) : pack(ink);
         frames[i] = {data, ov: overlayArg(ink.overlay), crc: crc32(data)};
         setStatus(t('st_rendering', {i: ++done, n: jobs.length}));
       }
     }));
     const bytes = frames.reduce((a, f) => a + f.data.length, 0);
-    if (dxf) {
-      const blk = n => Math.ceil(n / 4096) * 4096;     // on flash: whole blocks, +1 for the counter box, +1 upload in progress
-      const need = frames.reduce((a, f) => a + blk(f.data.length) + 4096, 0) + blk(Math.max(...frames.map(f => f.data.length)));
-      if (need > deviceInfo.pageBudget) { setStatus(t('st_too_big', {n: Math.ceil(need / 1024), m: Math.floor(deviceInfo.pageBudget / 1024)})); return; }
-    }
     // pages the board already holds, byte for byte, are not sent again
     let have = new Map();
     if (feat.includes('pages')) {
       try { have = new Map((await (await fetch(api('/api/pages'), {cache: 'no-store'})).json()).map(p => [p.slot, p])); } catch {}
+    }
+    const same = (f, i) => { const h = have.get(i); return h && h.size === f.data.length && (h.crc >>> 0) === f.crc && String(h.ov || '') === f.ov; };
+    const blk = n => Math.ceil(n / 4096) * 4096;     // on flash: whole blocks, +1 for the counter box
+    let stage = false;
+    if (dxf) {
+      const need = frames.reduce((a, f) => a + blk(f.data.length) + 4096, 0) + blk(Math.max(...frames.map(f => f.data.length)));
+      if (need > deviceInfo.pageBudget) { setStatus(t('st_too_big', {n: Math.ceil(need / 1024), m: Math.floor(deviceInfo.pageBudget / 1024)})); return; }
+      // staging keeps old and new pages side by side until the switch: only if they fit
+      const changed = frames.reduce((a, f, i) => a + (same(f, i) ? 0 : blk(f.data.length) + 4096), 0);
+      stage = feat.includes('pools') && deviceInfo.freeBytes != null && changed + 16384 < deviceInfo.freeBytes;
     }
     setStatus(t('st_glyphs'));
     const gd = new FormData();
@@ -4139,41 +4192,66 @@ async function sendAll() {
     else if (!gr.ok) throw new Error(`glyphs: HTTP ${gr.status}`);
     let skipped = 0;
     for (let i = 0; i < frames.length; i++) {
-      const f = frames[i], h = have.get(i);
-      if (h && h.size === f.data.length && (h.crc >>> 0) === f.crc && String(h.ov || '') === f.ov) { skipped++; continue; }
+      const f = frames[i];
+      if (same(f, i)) { skipped++; continue; }
       setStatus(t('st_sending', {i: i + 1, n: frames.length}));
       const fd = new FormData();
       fd.append('frame', new Blob([f.data], {type: 'application/octet-stream'}), 'frame.bin');
-      const r = await fetch(api(`/api/frame?slot=${i}${f.ov ? '&ov=' + f.ov : ''}`), {method: 'POST', body: fd});
+      const r = await fetch(api(`/api/frame?slot=${i}${stage ? '&stage=1' : ''}${f.ov ? '&ov=' + f.ov : ''}`), {method: 'POST', body: fd});
       if (!r.ok) throw new Error(`${t('st_page', {i: i + 1})}: HTTP ${r.status}`);
     }
     note = ' · ' + t('st_sent_kb', {kb: Math.ceil(bytes / 1024)}) + (skipped ? ' · ' + t('st_skipped', {n: skipped}) : '') + note;
     const mins = k => Math.max(0, Math.round(Number((state.pageMin || {})[k]) || 0));
-    const body = new URLSearchParams({count: entries.length, interval: Math.max(0, Number(state.interval) || 0),
-      daily: daily.length, sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
+    const daily = plan.at(-1)?.key === 'daily' ? plan.at(-1).jobs.length : 0;
+    const body = new URLSearchParams({
+      ...(pools ? {pools: poolsSpec(plan)} : {count: plan.length - (daily ? 1 : 0), daily}),
+      ...(stage ? {commit: 1} : {}),
+      interval: Math.max(0, Number(state.interval) || 0),
+      sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
       tz: state.tz || DEFAULTS.tz, now: Math.floor(Date.now() / 1000),
       qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
-      iv: [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(','),
+      iv: plan.map(e => mins(e.key)).join(','),
       flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
       batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10)),
-      ...dailySettings()});
+      ...dailySettings(), ...orderSettings()});
     const r = await fetch(api('/api/rotation'), {method: 'POST', body});
     if (!r.ok) throw new Error(`${t('st_rotation')}: HTTP ${r.status}`);
     await saveState(true);
-    setStatus(t('st_sent', {n: jobs.length}) + note);
+    const msg = t('st_sent', {n: jobs.length}) + note;
+    setStatus(msg);
+    if (pools) waitForDisplay(msg);
   } catch (e) { setStatus(t('st_send_fail', {e: e.message})); }
 }
 
 // Puts one page of the rotation on the e-paper now (POST /api/show?slot=<rotation entry>).
 // Only when the board holds the rotation listed here: otherwise the numbers differ.
-async function showOnDevice(key, part = 0) {
+async function showOnDevice(key, part = 0, sub = 0) {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
-  const entries = rotation(), daily = state.pg_daily ? 1 : 0;
-  if (deviceInfo.count !== entries.length || Boolean(deviceInfo.daily) !== Boolean(daily)) { setStatus(t('st_show_stale')); return; }
-  const idx = key == null ? -1 : key === 'daily' ? entries.length : rotationIndex(key, part);
+  if (!boardMatches()) { setStatus(t('st_show_stale')); return; }
+  const idx = key == null ? -1 : rotationIndex(key, part, sub);
   if (idx < 0) { setStatus(t('st_show_none')); return; }
   const r = await fetch(api('/api/show?slot=' + idx), {method: 'POST'}).catch(() => null);
-  setStatus(r?.ok ? t('st_show', {p: t('pg_' + key) + (pageParts(key) > 1 ? ' ' + (part + 1) : '')}) : t('st_err', {e: r ? r.status : 'network'}));
+  const label = t('pg_' + key) + (pageParts(key) > 1 ? ' ' + (part + 1) : '');
+  setStatus(r?.ok ? t('st_show', {p: label}) : t('st_err', {e: r ? r.status : 'network'}));
+  if (r?.ok) waitForDisplay(t('st_show', {p: label}));
+}
+
+// The board draws after replying (a B/W/R refresh takes ~16 s and blocks it): ask
+// /api/info until nothing is pending, then say so.
+async function waitForDisplay(prefix) {
+  const t0 = Date.now();
+  await new Promise(r => setTimeout(r, 1200));
+  while (Date.now() - t0 < 60000) {
+    try {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 25000);
+      const i = await (await fetch(api('/api/info'), {cache: 'no-store', signal: ctl.signal})).json();
+      clearTimeout(to);
+      deviceInfo = i;
+      if (!i.pending) { setStatus(prefix + ' · ' + t('st_idle', {s: Math.round((Date.now() - t0) / 1000)})); renderPowerBox(); return; }
+    } catch {}
+    setStatus(prefix + ' · ' + t('st_drawing'));
+    await new Promise(r => setTimeout(r, 1500));
+  }
 }
 
 async function nextOnDevice() {

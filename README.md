@@ -144,8 +144,11 @@ Off by default; turn them on in *Pages*.
 
 - *Pages* lists every page: tick it, move it with the arrows, and optionally give it its own **minutes on
   screen** (empty = the general *Page change* time). The Pokémon of the day always closes the rotation.
-- **Quiet hours** (*Energy & updates*): no automatic page change between two times; the button still works and the day
-  counter still updates. With deep sleep on, the board sleeps through them.
+- **Quiet hours** (*Energy & updates*): no automatic page change between two times (or, with *At night: change
+  page every N minutes*, a slower pace); the button still works and the day counter still updates. With deep
+  sleep on, the board sleeps through them.
+- **Random order** (*Energy & updates*): the pages come in a new random order every round, and a round never
+  starts with the page the previous one ended on.
 - **Header style** (*Look*): classic black bar, bar in the accent ink (red on panels that have it), light,
   a tab behind the name only, or an outlined bar.
 - **Frames** (*Look*): a border around the page, for all pages or a different one per page (*Pages*). Nine
@@ -163,6 +166,8 @@ Off by default; turn them on in *Pages*.
   *Pages* does the same (`/api/show`). It needs the board to hold the pages listed in the UI.
 - *Send all pages* renders four pages at a time and skips the ones the board already holds
   (`/api/pages` returns size and CRC-32 of each), so a small change uploads one page instead of all.
+  The new pages go to a staging copy and replace the old ones only at the end (when there is room for both),
+  so a send that stops halfway leaves the display as it was; the UI then waits for the screen to finish.
 
 ## Colour
 
@@ -321,14 +326,14 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 
 | Method | Path | Body |
 |---|---|---|
-| GET | `/api/info` | → `{w,h,api,panel,panelName,palette,bpp,partial,pageBudget,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy,features,dailyAt,dailyEvery,dailyShuffle,dailyIndex,dailyPick,sleepOn,intervalMin,batLowMv,fullEvery,uptime}` |
-| POST | `/api/frame?slot=N[&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = day-counter box, `color` 0 black, 1 red, 2 yellow…; two optional fields more: `mode` (0 days since, 1 days until) and `scale` (1–4) |
+| GET | `/api/info` | → `{w,h,api,panel,panelName,palette,bpp,partial,pageBudget,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy,features,dailyAt,dailyEvery,dailyShuffle,dailyIndex,pools,order,quietInterval,pending,freeBytes,sleepOn,intervalMin,batLowMv,fullEvery,uptime,appSize,sketchSize}`; `pending` is true until the screen has finished drawing |
+| POST | `/api/frame?slot=N[&stage=1][&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = day-counter box, `color` 0 black, 1 red, 2 yellow…; two optional fields more: `mode` (0 days since, 1 days until) and `scale` (1–4) |
 | GET | `/api/pages` | → `[{slot,size,crc,ov}]` for the stored pages (CRC-32 of the file) |
 | POST | `/api/glyphs` | multipart file: digit strip for the day counter (`[gw,gh,n,adv[n],bitmaps]`) |
-| POST | `/api/rotation` | form: `count` (regular pages), `interval` (minutes, `0` = button only), `daily` (pool size, slots after the regular ones), `sleep` (0/1), `awake` (min), `qf`/`qt` (quiet hours, minutes of the day, -1 = off), `iv` (minutes per rotation entry, comma separated, 0 = default), `flip` (0/1), `dbl`/`lng` (button actions: 0 none, 1 next, 2 previous, 3 full refresh), `batlow` (mV), `fullevery`, `dat` (Pokémon of the day change time, minutes of the day), `dev` (every N days, 1–30), `dsh` (shuffle each round, 0/1), `tz` (POSIX), `now` (epoch s) |
+| POST | `/api/rotation` | form: `pools` (one size per rotation entry: `1` a page, `7d` a pool of 7 that changes with the *of the day* schedule, `5v` a pool of 5 that moves on every time the entry comes up; slots are numbered across entries in order; older form: `count` + `daily`), `commit=1` (staged pages replace the live ones), `interval` (minutes, `0` = button only), `ord` (1 = random order per round), `qi` (minutes between pages during the quiet hours, 0 = none), `sleep` (0/1), `awake` (min), `qf`/`qt` (quiet hours, minutes of the day, -1 = off), `iv` (minutes per rotation entry, comma separated, 0 = default), `flip` (0/1), `dbl`/`lng` (button actions: 0 none, 1 next, 2 previous, 3 full refresh), `batlow` (mV), `fullevery`, `dat` (Pokémon of the day change time, minutes of the day), `dev` (every N days, 1–30), `dsh` (shuffle each round, 0/1), `tz` (POSIX), `now` (epoch s) |
 | POST | `/api/settings` | the same settings as `/api/rotation` (any subset, no `count`/`daily`): stored without touching the pages; the page on screen is redrawn only if it changes |
 | POST | `/api/refresh` | full refresh of the page on screen |
-| POST | `/api/next` | show next page |
+| POST | `/api/next` / `/api/prev` | next / previous page of the rotation |
 | POST | `/api/show?slot=N` | show rotation entry N now (the Pokémon of the day is the last one) |
 | GET/POST | `/api/state` | card data JSON (≤64 KB) |
 | POST | `/api/ota[?md5=…]` | multipart firmware `.bin` (app image) for this panel; optional MD5 checked after writing; restarts when done |
@@ -393,6 +398,7 @@ the repository needs *Settings → Pages → Source: GitHub Actions*.
 ```bash
 python3 tests/test_codec.py    # web UI encoder against the firmware decoder (needs node, g++)
 python3 tests/test_daily.py    # Pokémon of the day: web UI schedule against the firmware (needs node, g++)
+python3 tests/test_rotation.py # rotation engine: pool list, slot numbering, shuffled order (needs g++)
 python3 tests/test_ui.py       # web UI against a fake board, every panel type (needs playwright + chromium)
 ```
 

@@ -309,6 +309,7 @@ const DEFAULTS = {
   quietOn:false, quietFrom:'23:00', quietTo:'07:00', flip:false, btnDouble:0, btnLong:0, batLow:3.5, fullEvery:10,
   pageStyle:'classic', previewPanel:'',
   frame:'none', pageFrame:{}, frameImg:'', dailyAt:'00:00', dailyEvery:1, dailyShuffle:false,
+  orderShuffle:false, quietInterval:0,
 };
 
 const typeOpts = (blank) => () => [...(blank ? [['', '—']] : []), ...TYPE_KEYS.map(k => [k, typeName(k, state.uiLang)])];
@@ -340,7 +341,8 @@ const GROUPS = [
     ['previewPanel','previewPanel','select',() => [['', t('pv_same')], ...Object.keys(PANELS).map(k => [k, panelLabel(k)])]]]],
   // battery, refresh and timing; the Pokémon of the day pool and its schedule (box: buildPowerBox)
   ['power', [['interval','interval','number'],['fullEvery','fullEvery','number'],
-    ['quietOn','quietOn','checkbox','wide'],['quietFrom','quietFrom','time'],['quietTo','quietTo','time'],
+    ['quietOn','quietOn','checkbox','wide'],['quietFrom','quietFrom','time'],['quietTo','quietTo','time'],['quietInterval','quietInterval','number'],
+    ['orderShuffle','orderShuffle','checkbox','wide'],
     ['sleep','sleep','checkbox','wide'],['awake','awake','number'],['batLow','batLow','number'],
     ['dailyCount','dailyCount','number'],['dailyAt','dailyAt','time'],['dailyEvery','dailyEvery','number'],
     ['dailyShuffle','dailyShuffle','checkbox','wide']]],

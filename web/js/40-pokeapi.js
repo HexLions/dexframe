@@ -47,6 +47,4 @@ function rotation() {
     if (!sameCard(card.data, state)) entries.push({key: 'cover', s: {...state, ...card.data}, card});
   return entries;
 }
-const totalEntries = () => rotation().length + (state.pg_daily ? 1 : 0);
-const rotationIndex = (key, part = 0) => key === 'daily' ? totalEntries() - 1 : rotation().findIndex(e => e.key === key && e.s === state && (e.part || 0) === part);
 

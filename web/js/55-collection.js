@@ -21,7 +21,7 @@ function renderCollection() {
   if (!$('colbox')) return;
   const list = state.collection || [];
   const max = deviceInfo ? (deviceInfo.api >= 2 ? deviceInfo.maxSlots : deviceInfo.slotsFit ?? deviceInfo.maxSlots ?? 8) : 28;
-  $('colInfo').textContent = t('col_info', {n: list.length, p: rotation().length, d: state.pg_daily ? dailyN() : 0, m: max});
+  $('colInfo').textContent = t('col_info', {n: list.length, p: rotationPlan().length, d: state.pg_daily ? dailyN() : 0, m: max});
   const btn = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = fn; return b; };
   const commit = next => { state.collection = next; renderCollection(); buildTabs(); scheduleRender(); saveState(true); };
   const rows = list.map((card, i) => {
