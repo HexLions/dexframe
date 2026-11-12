@@ -22,7 +22,7 @@ function drawTeamRow(ctx, s, acc, a) {
 // (paintOverlay in src/main.cpp).
 function digitRun(str) {
   const g = buildGlyphs(), n = g[2], sep = numSep();
-  const idx = [...String(str)].map(ch => ch === sep ? 10 : ch >= '0' && ch <= '9' ? Number(ch) : -1).filter(k => k >= 0 && k < n);
+  const idx = [...String(str)].map(ch => ch === sep ? 10 : ch === '%' ? 11 : ch >= '0' && ch <= '9' ? Number(ch) : -1).filter(k => k >= 0 && k < n);
   return {g, idx, width: idx.reduce((a, k) => a + g[3 + k], 0)};
 }
 function drawDigits(ctx, str, x0, y0, w, align, scale, color) {

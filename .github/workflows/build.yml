@@ -29,6 +29,10 @@ jobs:
         run: python tests/test_rotation.py
       - name: Pokémon of the day (web UI schedule against the firmware)
         run: python tests/test_daily.py
+      - name: Push tool (frames from pictures and text)
+        run: |
+          pip install pillow
+          python tests/test_push.py
       - name: Web UI against a fake board, every panel type
         run: |
           pip install playwright
@@ -40,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        panel: [bw, bwr, bwry]
+        panel: [bw, bwr, bwry, spectra73]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -310,6 +310,10 @@ const DEFAULTS = {
   pageStyle:'classic', previewPanel:'',
   frame:'none', pageFrame:{}, frameImg:'', dailyAt:'00:00', dailyEvery:1, dailyShuffle:false,
   orderShuffle:false, quietInterval:0,
+  pg_whosthat:false, wtpCount:7, wtpSeed:0, pg_shiny:false, shTarget:'', shOdds:4096, shMethod:'', shPhases:'', shCount:0,
+  pg_split:false, splitLayout:'q4', splitTitle:'', splitW0:'sprite', splitW1:'days', splitW2:'team', splitW3:'stats',
+  pg_images:false, images:[],
+  pg_dexprog:false, dexScope:'national', dexCaught:'', dexUseCol:true, pg_itemday:false, itemKind:'item', itemCount:7, itemSeed:0,
 };
 
 const typeOpts = (blank) => () => [...(blank ? [['', '—']] : []), ...TYPE_KEYS.map(k => [k, typeName(k, state.uiLang)])];
@@ -350,12 +354,20 @@ const GROUPS = [
     ['panel','panel','select',() => Object.keys(PANELS).map(k => [k, panelLabel(k)])],
     ['deviceUrl','deviceUrl','text','wide'],
     ['flip','flip','checkbox','wide'],
-    ['btnDouble','btnDouble','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
-    ['btnLong','btnLong','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
+    ['btnDouble','btnDouble','select',() => [0, 1, 2, 3, 4, 5].map(k => [k, t('ba_' + k)])],
+    ['btnLong','btnLong','select',() => [0, 1, 2, 3, 4, 5].map(k => [k, t('ba_' + k)])],
     ['tz','tz','text','adv']]],
   // which pages, their order and minutes: the list built by buildPagesBox()
   ['pages', [['teamPer','teamPer','select',() => [6, 3, 2].map(k => [k, t('tp_' + k)])],
-    ['cdTitle','cdTitle'],['cdDate','cdDate']]],
+    ['cdTitle','cdTitle'],['cdDate','cdDate'],
+    ['wtpCount','wtpCount','number'],['itemKind','itemKind','select',() => [['item', t('ik_item')], ['berry', t('ik_berry')]]],['itemCount','itemCount','number'],
+    ['dexScope','dexScope','select',() => [['national', t('ds_national')], ...[1,2,3,4,5,6,7,8,9].map(g => ['gen' + g, t('ds_gen', {g})])]],
+    ['dexUseCol','dexUseCol','checkbox','wide'],['dexCaught','dexCaught','textarea']]],
+  ['split', [['splitLayout','splitLayout','select',() => Object.keys(SPLIT_LAYOUTS).map(k => [k, t('sl_' + k)])],['splitTitle','splitTitle'],
+    ...[0, 1, 2, 3].map(i => ['splitW' + i, ['splitW', {n: i + 1}], 'select', () => SPLIT_WIDGETS.map(k => [k, t('sw_' + k)])])]],
+  ['gallery', []],
+  ['shiny', [['shTarget','shTarget','number'],['shOdds','shOdds','select',() => SHINY_ODDS.map(k => [k, t('so_' + k)])],
+    ['shMethod','shMethod','text','wide'],['shPhases','shPhases','textarea']]],
   ['system', []],
   ['backup', []],
 ];

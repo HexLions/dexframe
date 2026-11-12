@@ -99,6 +99,10 @@ details.adv .grid{margin-top:8px}
 .pgrow{flex-wrap:wrap}
 .pgrow label{flex:1 1 140px}
 #syInfo{white-space:pre-line}
+.galist{display:flex;flex-direction:column;gap:6px}
+.garow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+.garow img{width:80px;height:60px;object-fit:cover;border-radius:4px;background:#fff}
+.garow input{flex:1 1 120px;min-width:0}
 </style>
 </head>
 <body>
@@ -143,7 +147,8 @@ const PANELS = {
   bw: {palette: ['white', 'black']},
   bwr: {palette: ['white', 'black', 'red']},
   bwry: {palette: ['white', 'black', 'red', 'yellow']},
-  color6: {palette: ['white', 'black', 'red', 'yellow', 'blue', 'green'], previewOnly: true}};   // no firmware build yet
+  spectra73: {palette: ['white', 'black', 'red', 'yellow', 'blue', 'green']},           // 7.3" 800x480: pages scaled to fit
+  color6: {palette: ['white', 'black', 'red', 'yellow', 'blue', 'green'], previewOnly: true}};
 const panelOf = s => PANELS[s.panel] || PANELS.bw;
 const hasInk = (s, name) => panelOf(s).palette.includes(name);
 const isColour = s => panelOf(s).palette.length > 3;      // yellow and beyond: coloured sprites and type colours
@@ -463,6 +468,10 @@ const DEFAULTS = {
   pageStyle:'classic', previewPanel:'',
   frame:'none', pageFrame:{}, frameImg:'', dailyAt:'00:00', dailyEvery:1, dailyShuffle:false,
   orderShuffle:false, quietInterval:0,
+  pg_whosthat:false, wtpCount:7, wtpSeed:0, pg_shiny:false, shTarget:'', shOdds:4096, shMethod:'', shPhases:'', shCount:0,
+  pg_split:false, splitLayout:'q4', splitTitle:'', splitW0:'sprite', splitW1:'days', splitW2:'team', splitW3:'stats',
+  pg_images:false, images:[],
+  pg_dexprog:false, dexScope:'national', dexCaught:'', dexUseCol:true, pg_itemday:false, itemKind:'item', itemCount:7, itemSeed:0,
 };
 
 const typeOpts = (blank) => () => [...(blank ? [['', '—']] : []), ...TYPE_KEYS.map(k => [k, typeName(k, state.uiLang)])];
@@ -503,12 +512,20 @@ const GROUPS = [
     ['panel','panel','select',() => Object.keys(PANELS).map(k => [k, panelLabel(k)])],
     ['deviceUrl','deviceUrl','text','wide'],
     ['flip','flip','checkbox','wide'],
-    ['btnDouble','btnDouble','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
-    ['btnLong','btnLong','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
+    ['btnDouble','btnDouble','select',() => [0, 1, 2, 3, 4, 5].map(k => [k, t('ba_' + k)])],
+    ['btnLong','btnLong','select',() => [0, 1, 2, 3, 4, 5].map(k => [k, t('ba_' + k)])],
     ['tz','tz','text','adv']]],
   // which pages, their order and minutes: the list built by buildPagesBox()
   ['pages', [['teamPer','teamPer','select',() => [6, 3, 2].map(k => [k, t('tp_' + k)])],
-    ['cdTitle','cdTitle'],['cdDate','cdDate']]],
+    ['cdTitle','cdTitle'],['cdDate','cdDate'],
+    ['wtpCount','wtpCount','number'],['itemKind','itemKind','select',() => [['item', t('ik_item')], ['berry', t('ik_berry')]]],['itemCount','itemCount','number'],
+    ['dexScope','dexScope','select',() => [['national', t('ds_national')], ...[1,2,3,4,5,6,7,8,9].map(g => ['gen' + g, t('ds_gen', {g})])]],
+    ['dexUseCol','dexUseCol','checkbox','wide'],['dexCaught','dexCaught','textarea']]],
+  ['split', [['splitLayout','splitLayout','select',() => Object.keys(SPLIT_LAYOUTS).map(k => [k, t('sl_' + k)])],['splitTitle','splitTitle'],
+    ...[0, 1, 2, 3].map(i => ['splitW' + i, ['splitW', {n: i + 1}], 'select', () => SPLIT_WIDGETS.map(k => [k, t('sw_' + k)])])]],
+  ['gallery', []],
+  ['shiny', [['shTarget','shTarget','number'],['shOdds','shOdds','select',() => SHINY_ODDS.map(k => [k, t('so_' + k)])],
+    ['shMethod','shMethod','text','wide'],['shPhases','shPhases','textarea']]],
   ['system', []],
   ['backup', []],
 ];
@@ -1123,6 +1140,138 @@ Object.assign(UI.de, {
   st_show_none: 'Diese Seite ist nicht in der Rotation',
   sy_fw_part: 'Dieses Board hat die alte Partitionstabelle: für den Platz von 2.0 ist ein vollständiges Flashen nötig (Factory-Datei oder Web-Installer).',
 });
+
+// pages added in 2.0 (settings, buttons) — UI
+Object.assign(UI.it, {
+  g_shiny: 'Caccia shiny', pg_whosthat: 'Chi è quel Pokémon?', pg_shiny: 'Contatore shiny', pg_dexprog: 'Progresso Pokédex', pg_itemday: 'Strumento del giorno',
+  wtpCount: 'Chi è quel Pokémon?: quanti nel gruppo (1-14)', itemKind: 'Strumento del giorno: tipo', ik_item: 'Strumenti', ik_berry: 'Bacche',
+  itemCount: 'Strumento del giorno: quanti nel gruppo (1-14)', dexScope: 'Progresso Pokédex: quale', ds_national: 'Nazionale (1-1025)', ds_gen: 'Generazione {g}',
+  dexUseCol: 'Conta anche i Pokémon di collezione, scheda e squadra', dexCaught: 'Progresso Pokédex: numeri presi (es. 1-151, 155, 200-210)',
+  shTarget: 'Pokémon cercato (n° Pokédex; vuoto = quello della scheda)', shOdds: 'Probabilità',
+  so_4096: '1/4096 (gen 6+)', so_8192: '1/8192 (gen 2-5)', so_1365: '1/1365 (Cromamuleto)', so_683: '1/683 (Masuda)', so_512: '1/512 (Masuda + Cromamuleto)', so_1024: '1/1024 (concatena / bonus)', so_2731: '1/2731 (Cromamuleto, gen 5)',
+  shMethod: 'Metodo (testo libero, es. Masuda · Scarlatto)', shPhases: 'Fasi / note (es. fase 2: Gloom)',
+  ba_4: 'Contatore shiny +1', ba_5: 'Contatore shiny −1',
+  sc_set: 'Imposta', sc_reset: 'Azzera', sc_reset_c: 'Azzerare il contatore shiny?',
+  sc_info: 'Il conteggio è salvato sulla board: con Display → Pulsante → "Contatore shiny +1" lo aumenti senza aprire questa pagina, e il numero sullo schermo si aggiorna da solo.',
+  sc_nodev: 'Nessun display collegato: il conteggio resta in questo browser e si vede solo nell\'anteprima.',
+});
+Object.assign(UI.en, {
+  g_shiny: 'Shiny hunt', pg_whosthat: 'Who\'s that Pokémon?', pg_shiny: 'Shiny counter', pg_dexprog: 'Pokédex progress', pg_itemday: 'Item of the day',
+  wtpCount: 'Who\'s that Pokémon?: how many in the pool (1-14)', itemKind: 'Item of the day: kind', ik_item: 'Items', ik_berry: 'Berries',
+  itemCount: 'Item of the day: how many in the pool (1-14)', dexScope: 'Pokédex progress: which', ds_national: 'National (1-1025)', ds_gen: 'Generation {g}',
+  dexUseCol: 'Also count the Pokémon of the collection, the card and the team', dexCaught: 'Pokédex progress: numbers caught (e.g. 1-151, 155, 200-210)',
+  shTarget: 'Target Pokémon (Pokédex no.; empty = the one on the card)', shOdds: 'Odds',
+  so_4096: '1/4096 (gen 6+)', so_8192: '1/8192 (gen 2-5)', so_1365: '1/1365 (Shiny Charm)', so_683: '1/683 (Masuda)', so_512: '1/512 (Masuda + Charm)', so_1024: '1/1024 (chain / bonus)', so_2731: '1/2731 (Shiny Charm, gen 5)',
+  shMethod: 'Method (free text, e.g. Masuda · Scarlet)', shPhases: 'Phases / notes (e.g. phase 2: Gloom)',
+  ba_4: 'Shiny counter +1', ba_5: 'Shiny counter −1',
+  sc_set: 'Set', sc_reset: 'Reset', sc_reset_c: 'Reset the shiny counter?',
+  sc_info: 'The count is kept on the board: with Display → Button → "Shiny counter +1" you add encounters without opening this page, and the number on screen updates by itself.',
+  sc_nodev: 'No display connected: the count stays in this browser and only shows in the preview.',
+});
+Object.assign(UI.es, {
+  g_shiny: 'Caza shiny', pg_whosthat: '¿Quién es ese Pokémon?', pg_shiny: 'Contador shiny', pg_dexprog: 'Progreso de la Pokédex', pg_itemday: 'Objeto del día',
+  wtpCount: '¿Quién es ese Pokémon?: cuántos en el grupo (1-14)', itemKind: 'Objeto del día: tipo', ik_item: 'Objetos', ik_berry: 'Bayas',
+  itemCount: 'Objeto del día: cuántos en el grupo (1-14)', dexScope: 'Progreso de la Pokédex: cuál', ds_national: 'Nacional (1-1025)', ds_gen: 'Generación {g}',
+  dexUseCol: 'Contar también los Pokémon de la colección, la ficha y el equipo', dexCaught: 'Progreso de la Pokédex: números capturados (p. ej. 1-151, 155, 200-210)',
+  shTarget: 'Pokémon buscado (n.º Pokédex; vacío = el de la ficha)', shOdds: 'Probabilidad',
+  so_4096: '1/4096 (gen 6+)', so_8192: '1/8192 (gen 2-5)', so_1365: '1/1365 (Amuleto iris)', so_683: '1/683 (Masuda)', so_512: '1/512 (Masuda + Amuleto)', so_1024: '1/1024 (cadena / bonus)', so_2731: '1/2731 (Amuleto iris, gen 5)',
+  shMethod: 'Método (texto libre, p. ej. Masuda · Escarlata)', shPhases: 'Fases / notas (p. ej. fase 2: Gloom)',
+  ba_4: 'Contador shiny +1', ba_5: 'Contador shiny −1',
+  sc_set: 'Fijar', sc_reset: 'Poner a cero', sc_reset_c: '¿Poner a cero el contador shiny?',
+  sc_info: 'La cuenta se guarda en la placa: con Pantalla → Botón → "Contador shiny +1" sumas encuentros sin abrir esta página, y el número en pantalla se actualiza solo.',
+  sc_nodev: 'Ninguna pantalla conectada: la cuenta se queda en este navegador y solo se ve en la vista previa.',
+});
+Object.assign(UI.fr, {
+  g_shiny: 'Chasse au shiny', pg_whosthat: 'Quel est ce Pokémon ?', pg_shiny: 'Compteur shiny', pg_dexprog: 'Progression du Pokédex', pg_itemday: 'Objet du jour',
+  wtpCount: 'Quel est ce Pokémon ? : combien dans le groupe (1-14)', itemKind: 'Objet du jour : type', ik_item: 'Objets', ik_berry: 'Baies',
+  itemCount: 'Objet du jour : combien dans le groupe (1-14)', dexScope: 'Progression du Pokédex : lequel', ds_national: 'National (1-1025)', ds_gen: 'Génération {g}',
+  dexUseCol: 'Compter aussi les Pokémon de la collection, de la fiche et de l\'équipe', dexCaught: 'Progression du Pokédex : numéros capturés (p. ex. 1-151, 155, 200-210)',
+  shTarget: 'Pokémon recherché (n° Pokédex ; vide = celui de la fiche)', shOdds: 'Probabilité',
+  so_4096: '1/4096 (gén. 6+)', so_8192: '1/8192 (gén. 2-5)', so_1365: '1/1365 (Charme Chroma)', so_683: '1/683 (Masuda)', so_512: '1/512 (Masuda + Charme)', so_1024: '1/1024 (chaîne / bonus)', so_2731: '1/2731 (Charme Chroma, gén. 5)',
+  shMethod: 'Méthode (texte libre, p. ex. Masuda · Écarlate)', shPhases: 'Phases / notes (p. ex. phase 2 : Ortide)',
+  ba_4: 'Compteur shiny +1', ba_5: 'Compteur shiny −1',
+  sc_set: 'Définir', sc_reset: 'Remettre à zéro', sc_reset_c: 'Remettre le compteur shiny à zéro ?',
+  sc_info: 'Le compte est gardé sur la carte : avec Écran → Bouton → « Compteur shiny +1 » vous ajoutez des rencontres sans ouvrir cette page, et le nombre à l\'écran se met à jour tout seul.',
+  sc_nodev: 'Aucun écran connecté : le compte reste dans ce navigateur et ne se voit que dans l\'aperçu.',
+});
+Object.assign(UI.de, {
+  g_shiny: 'Shiny-Jagd', pg_whosthat: 'Wer ist das Pokémon?', pg_shiny: 'Shiny-Zähler', pg_dexprog: 'Pokédex-Fortschritt', pg_itemday: 'Item des Tages',
+  wtpCount: 'Wer ist das Pokémon?: wie viele in der Gruppe (1-14)', itemKind: 'Item des Tages: Art', ik_item: 'Items', ik_berry: 'Beeren',
+  itemCount: 'Item des Tages: wie viele in der Gruppe (1-14)', dexScope: 'Pokédex-Fortschritt: welcher', ds_national: 'National (1-1025)', ds_gen: 'Generation {g}',
+  dexUseCol: 'Auch die Pokémon aus Sammlung, Karte und Team zählen', dexCaught: 'Pokédex-Fortschritt: gefangene Nummern (z. B. 1-151, 155, 200-210)',
+  shTarget: 'Gesuchtes Pokémon (Pokédex-Nr.; leer = das der Karte)', shOdds: 'Chance',
+  so_4096: '1/4096 (Gen 6+)', so_8192: '1/8192 (Gen 2-5)', so_1365: '1/1365 (Schillerpin)', so_683: '1/683 (Masuda)', so_512: '1/512 (Masuda + Schillerpin)', so_1024: '1/1024 (Kette / Bonus)', so_2731: '1/2731 (Schillerpin, Gen 5)',
+  shMethod: 'Methode (freier Text, z. B. Masuda · Karmesin)', shPhases: 'Phasen / Notizen (z. B. Phase 2: Duflor)',
+  ba_4: 'Shiny-Zähler +1', ba_5: 'Shiny-Zähler −1',
+  sc_set: 'Setzen', sc_reset: 'Zurücksetzen', sc_reset_c: 'Shiny-Zähler zurücksetzen?',
+  sc_info: 'Der Zählerstand liegt auf dem Board: mit Display → Taste → „Shiny-Zähler +1“ zählst du Begegnungen, ohne diese Seite zu öffnen, und die Zahl auf dem Bildschirm aktualisiert sich selbst.',
+  sc_nodev: 'Kein Display verbunden: der Zählerstand bleibt in diesem Browser und ist nur in der Vorschau zu sehen.',
+});
+
+// pages added in 2.0 — on the e-paper
+Object.assign(DISP.it, {whosthat: 'Chi è?', wtp_q: 'Chi è quel Pokémon?', wtp_a: 'È {n}!', shiny: 'Caccia shiny', sh_count: 'Incontri', sh_chance: 'Probabilità di averlo già trovato', sh_odds: 'Probabilità',
+  dexprog: 'Pokédex', dex_nat: 'Pokédex nazionale', dex_gen: 'Generazione {g}', itemday: 'Del giorno', it_cat: 'Categoria', it_firm: 'Consistenza', it_size: 'Dimensione', it_grow: 'Crescita', it_cost: 'Prezzo', it_fling: 'Potenza lancio'});
+Object.assign(DISP.en, {whosthat: 'Who is it?', wtp_q: 'Who\'s that Pokémon?', wtp_a: 'It\'s {n}!', shiny: 'Shiny hunt', sh_count: 'Encounters', sh_chance: 'Chance it should have shown up', sh_odds: 'Odds',
+  dexprog: 'Pokédex', dex_nat: 'National Pokédex', dex_gen: 'Generation {g}', itemday: 'Of the day', it_cat: 'Category', it_firm: 'Firmness', it_size: 'Size', it_grow: 'Growth', it_cost: 'Price', it_fling: 'Fling power'});
+Object.assign(DISP.es, {whosthat: '¿Quién es?', wtp_q: '¿Quién es ese Pokémon?', wtp_a: '¡Es {n}!', shiny: 'Caza shiny', sh_count: 'Encuentros', sh_chance: 'Probabilidad de haberlo encontrado', sh_odds: 'Probabilidad',
+  dexprog: 'Pokédex', dex_nat: 'Pokédex Nacional', dex_gen: 'Generación {g}', itemday: 'Del día', it_cat: 'Categoría', it_firm: 'Firmeza', it_size: 'Tamaño', it_grow: 'Crecimiento', it_cost: 'Precio', it_fling: 'Potencia lanzar'});
+Object.assign(DISP.fr, {whosthat: 'Qui est-ce ?', wtp_q: 'Quel est ce Pokémon ?', wtp_a: 'C\'est {n} !', shiny: 'Chasse shiny', sh_count: 'Rencontres', sh_chance: 'Chance de l\'avoir déjà trouvé', sh_odds: 'Probabilité',
+  dexprog: 'Pokédex', dex_nat: 'Pokédex national', dex_gen: 'Génération {g}', itemday: 'Du jour', it_cat: 'Catégorie', it_firm: 'Fermeté', it_size: 'Taille', it_grow: 'Croissance', it_cost: 'Prix', it_fling: 'Puissance Dégommage'});
+Object.assign(DISP.de, {whosthat: 'Wer ist das?', wtp_q: 'Wer ist das Pokémon?', wtp_a: 'Es ist {n}!', shiny: 'Shiny-Jagd', sh_count: 'Begegnungen', sh_chance: 'Chance, es schon gefunden zu haben', sh_odds: 'Chance',
+  dexprog: 'Pokédex', dex_nat: 'Nationaler Pokédex', dex_gen: 'Generation {g}', itemday: 'Des Tages', it_cat: 'Kategorie', it_firm: 'Festigkeit', it_size: 'Größe', it_grow: 'Wachstum', it_cost: 'Preis', it_fling: 'Schleuder-Stärke'});
+
+// split screen and your images
+Object.assign(UI.it, {
+  g_split: 'Schermo diviso', g_gallery: 'Immagini', pg_split: 'Schermo diviso', pg_images: 'Le tue immagini',
+  splitLayout: 'Disposizione', sl_h2: '2 affiancati', sl_v2: '2 uno sopra l\'altro', sl_q4: '4 riquadri', splitTitle: 'Titolo (vuoto = nome del Pokémon)', splitW: 'Riquadro {n}',
+  sw_sprite: 'Sprite', sw_days: 'Giorni insieme', sw_countdown: 'Conto alla rovescia', sw_shiny: 'Contatore shiny', sw_team: 'Squadra', sw_dexprog: 'Progresso Pokédex', sw_stats: 'Statistiche', sw_none: 'Vuoto',
+  im_info: 'Le immagini vengono salvate sul display (400×300, ~30 KB l\'una) e la pagina "Le tue immagini" ne mostra una nuova ogni volta che torna nella rotazione.',
+  im_up: 'Aggiungi immagini…', im_caption: 'Didascalia (facoltativa)', im_cover: 'Riempie (ritaglia)', im_contain: 'Intera (bordi bianchi)',
+  im_none: 'Nessuna immagine: aggiungile nella sezione Immagini', im_nodev: 'Collega il display: le immagini vengono salvate lì',
+});
+Object.assign(UI.en, {
+  g_split: 'Split screen', g_gallery: 'Images', pg_split: 'Split screen', pg_images: 'Your images',
+  splitLayout: 'Layout', sl_h2: '2 side by side', sl_v2: '2 stacked', sl_q4: '4 boxes', splitTitle: 'Title (empty = the Pokémon\'s name)', splitW: 'Box {n}',
+  sw_sprite: 'Sprite', sw_days: 'Days together', sw_countdown: 'Countdown', sw_shiny: 'Shiny counter', sw_team: 'Team', sw_dexprog: 'Pokédex progress', sw_stats: 'Stats', sw_none: 'Empty',
+  im_info: 'Pictures are stored on the display (400×300, ~30 KB each) and the "Your images" page shows a new one every time it comes back in the rotation.',
+  im_up: 'Add pictures…', im_caption: 'Caption (optional)', im_cover: 'Fill (crop)', im_contain: 'Whole (white borders)',
+  im_none: 'No pictures: add them in the Images section', im_nodev: 'Connect the display: pictures are stored there',
+});
+Object.assign(UI.es, {
+  g_split: 'Pantalla dividida', g_gallery: 'Imágenes', pg_split: 'Pantalla dividida', pg_images: 'Tus imágenes',
+  splitLayout: 'Disposición', sl_h2: '2 lado a lado', sl_v2: '2 uno sobre otro', sl_q4: '4 recuadros', splitTitle: 'Título (vacío = nombre del Pokémon)', splitW: 'Recuadro {n}',
+  sw_sprite: 'Sprite', sw_days: 'Días juntos', sw_countdown: 'Cuenta atrás', sw_shiny: 'Contador shiny', sw_team: 'Equipo', sw_dexprog: 'Progreso de la Pokédex', sw_stats: 'Características', sw_none: 'Vacío',
+  im_info: 'Las imágenes se guardan en la pantalla (400×300, ~30 KB cada una) y la página "Tus imágenes" muestra una nueva cada vez que vuelve a la rotación.',
+  im_up: 'Añadir imágenes…', im_caption: 'Pie de foto (opcional)', im_cover: 'Rellenar (recortar)', im_contain: 'Entera (bordes blancos)',
+  im_none: 'Sin imágenes: añádelas en la sección Imágenes', im_nodev: 'Conecta la pantalla: las imágenes se guardan allí',
+});
+Object.assign(UI.fr, {
+  g_split: 'Écran partagé', g_gallery: 'Images', pg_split: 'Écran partagé', pg_images: 'Vos images',
+  splitLayout: 'Disposition', sl_h2: '2 côte à côte', sl_v2: '2 l\'un sur l\'autre', sl_q4: '4 cases', splitTitle: 'Titre (vide = nom du Pokémon)', splitW: 'Case {n}',
+  sw_sprite: 'Sprite', sw_days: 'Jours ensemble', sw_countdown: 'Compte à rebours', sw_shiny: 'Compteur shiny', sw_team: 'Équipe', sw_dexprog: 'Progression du Pokédex', sw_stats: 'Statistiques', sw_none: 'Vide',
+  im_info: 'Les images sont gardées sur l\'écran (400×300, ~30 Ko chacune) et la page « Vos images » en montre une nouvelle à chaque retour dans la rotation.',
+  im_up: 'Ajouter des images…', im_caption: 'Légende (facultative)', im_cover: 'Remplir (recadrer)', im_contain: 'Entière (bords blancs)',
+  im_none: 'Pas d\'images : ajoutez-les dans la section Images', im_nodev: 'Connectez l\'écran : les images y sont gardées',
+});
+Object.assign(UI.de, {
+  g_split: 'Geteilter Bildschirm', g_gallery: 'Bilder', pg_split: 'Geteilter Bildschirm', pg_images: 'Deine Bilder',
+  splitLayout: 'Aufteilung', sl_h2: '2 nebeneinander', sl_v2: '2 übereinander', sl_q4: '4 Felder', splitTitle: 'Titel (leer = Name des Pokémon)', splitW: 'Feld {n}',
+  sw_sprite: 'Sprite', sw_days: 'Tage zusammen', sw_countdown: 'Countdown', sw_shiny: 'Shiny-Zähler', sw_team: 'Team', sw_dexprog: 'Pokédex-Fortschritt', sw_stats: 'Statuswerte', sw_none: 'Leer',
+  im_info: 'Bilder werden auf dem Display gespeichert (400×300, ~30 KB pro Bild) und die Seite „Deine Bilder“ zeigt jedes Mal ein neues, wenn sie in der Rotation wiederkommt.',
+  im_up: 'Bilder hinzufügen…', im_caption: 'Bildunterschrift (optional)', im_cover: 'Füllen (zuschneiden)', im_contain: 'Ganz (weiße Ränder)',
+  im_none: 'Keine Bilder: füge sie im Bereich Bilder hinzu', im_nodev: 'Verbinde das Display: dort werden die Bilder gespeichert',
+});
+Object.assign(DISP.it, {split: '', images: ''});
+Object.assign(DISP.en, {split: '', images: ''});
+Object.assign(DISP.es, {split: '', images: ''});
+Object.assign(DISP.fr, {split: '', images: ''});
+Object.assign(DISP.de, {split: '', images: ''});
+
+Object.assign(UI.it, {pn_spectra73: '7,3" 6 colori (800×480)'});
+Object.assign(UI.en, {pn_spectra73: '7.3" 6 colours (800×480)'});
+Object.assign(UI.es, {pn_spectra73: '7,3" 6 colores (800×480)'});
+Object.assign(UI.fr, {pn_spectra73: '7,3" 6 couleurs (800×480)'});
+Object.assign(UI.de, {pn_spectra73: '7,3" 6 Farben (800×480)'});
 // ---------- form ----------
 function buildForm() {
   const form = $('form');
@@ -1166,8 +1315,8 @@ function buildForm() {
         try { localStorage.setItem('dexframe', JSON.stringify(state)); } catch {}
       });
       el.addEventListener('input', () => {
-        state[key] = type === 'checkbox' ? el.checked : type === 'number' || ['teamPer', 'btnDouble', 'btnLong'].includes(key) ? Number(el.value) : el.value;
-        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'dailyAt', 'dailyEvery', 'dailyShuffle', 'style', 'teamPer', 'team', 'hofTeam'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
+        state[key] = type === 'checkbox' ? el.checked : type === 'number' || ['teamPer', 'btnDouble', 'btnLong', 'shOdds'].includes(key) ? Number(el.value) : el.value;
+        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'dailyAt', 'dailyEvery', 'dailyShuffle', 'style', 'teamPer', 'team', 'hofTeam', 'wtpCount', 'itemCount', 'itemKind'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
         if (key === 'dispLang' || key === 'ribbons') renderPicker();   // names follow the display language
         if (key === 'trBase' || key === 'trFile') renderTrainerPicker();
         if (key === 'team' || key === 'dex' || key === 'style' || key === 'shiny' || key === 'dispLang') renderMonPickers();
@@ -1951,7 +2100,7 @@ const fmtNum = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, numSep());
 // the counter every day without the browser. Layout in src/main.cpp (loadGlyphs).
 const GLYPH_H = 16;   // Silkscreen 16px digits and separators sit in rows 3..14 of the text box
 function buildGlyphs() {
-  const chars = [...'0123456789', numSep()];
+  const chars = [...'0123456789', numSep(), '%'];   // 10 = thousands separator, 11 = per cent
   const c = document.createElement('canvas'), x = c.getContext('2d', {willReadFrequently: true});
   x.font = FONT(16, false);
   const adv = chars.map(ch => Math.round(x.measureText(ch).width));
@@ -2096,14 +2245,14 @@ function rotation() {
 // One entry per stop of the rotation; behind each entry a pool of pages (include/rotation.h):
 //   mode 'd'  the page changes with the "of the day" schedule (Energy & updates)
 //   mode 'v'  the next page of the pool every time the entry comes up
-// Pages that need a pool register a builder here: key -> (s) => [{mode, jobs:[{key, s, part}]}, …]
+// Pages that need a pool register a builder here: key -> (s, part) => {mode, jobs:[{key, s, part}, …]}
 const POOL_PAGES = {};
 
 function rotationPlan(s0 = state) {
   const plan = [];
   for (const e of rotation()) {
     const make = POOL_PAGES[e.key];
-    if (make && !e.card) for (const pool of make(e.s)) plan.push({key: e.key, part: e.part || 0, mode: pool.mode || 'd', jobs: pool.jobs, sub: pool.sub || 0});
+    if (make && !e.card) { const pool = make(e.s, e.part || 0); plan.push({key: e.key, part: e.part || 0, mode: pool.mode || 'd', jobs: pool.jobs}); }
     else plan.push({key: e.key, part: e.part || 0, mode: 'd', jobs: [{key: e.key, s: e.s, part: e.part || 0}], card: e.card});
   }
   if (s0.pg_daily) plan.push({key: 'daily', part: 0, mode: 'd', jobs: dailyIds(s0).map(id => ({key: 'daily', s: {...s0, _dailyId: id}, part: 0}))});
@@ -2112,7 +2261,7 @@ function rotationPlan(s0 = state) {
 // "1,1,7d,5v": what /api/rotation?pools= expects, and /api/info reports back
 const poolsSpec = plan => plan.map(e => e.jobs.length + (e.jobs.length > 1 ? e.mode : '')).join(',');
 const totalEntries = () => rotationPlan().length;
-const rotationIndex = (key, part = 0, sub = 0) => rotationPlan().findIndex(e => e.key === key && e.part === part && (e.sub || 0) === sub && !e.card);
+const rotationIndex = (key, part = 0) => rotationPlan().findIndex(e => e.key === key && e.part === part && !e.card);
 // The board holds the rotation listed here (same entries and pool sizes)?
 const boardMatches = () => !!deviceInfo && (deviceInfo.pools != null
   ? deviceInfo.pools === poolsSpec(rotationPlan())
@@ -2503,7 +2652,8 @@ async function renderPage(key, s = state, idx, total, part = 0) {
   const ctx = work.getContext('2d', {willReadFrequently: true});
   const assets = page.prepare ? await page.prepare(s) : {blits: []};
   setFrameForChrome(frameThickness(s, key));
-  chrome(ctx, s, d(key), idx, total, ...(page.header ? page.header(s, assets) : []));
+  if (page.bare) { ctx.fillStyle = WHITE; ctx.fillRect(0, 0, W, H); }
+  else chrome(ctx, s, d(key), idx, total, ...(page.header ? page.header(s, assets) : []));
   page.draw(ctx, s, acc, assets);
   const ink = canvasToInk(ctx, panelOf(s).palette);
   const opt = {hasRed, dither: s.dither, contrast: Number(s.contrast) || 0,
@@ -2516,7 +2666,8 @@ async function renderPage(key, s = state, idx, total, part = 0) {
     if (sp) blitSprite(ink, sp, ...page.spriteArea, opt);
   }
   await applyFrame(ink, s, key);
-  ink.overlay = assets.overlay || null;
+  // number boxes the board redraws by itself (day counter, countdown, shiny counter…)
+  ink.overlays = [...(assets.overlay ? [assets.overlay] : []), ...(assets.overlays || [])].slice(0, 4);
   return ink;
 }
 
@@ -2575,6 +2726,61 @@ function pack(ink) {
   return buf;
 }
 
+// ---------- panels bigger than the page ----------
+// Pages are drawn at 400x300. A bigger panel (e.g. 7.3", 800x480) gets them scaled up
+// (nearest neighbour) to fit, centred on white; the number boxes move and grow with the
+// page, and are drawn again here exactly as the board will draw them, so the frame and
+// the board's own updates match pixel for pixel.
+function boardValue(o, counter) {
+  if (o.mode === 2) return counter;
+  if (o.mode === 3) return Math.floor(100 * (1 - Math.pow(1 - 1 / Math.max(2, o.start), counter)));
+  return o.mode === 1 ? o.start - todayDay() : todayDay() - o.start;
+}
+
+// Mirror of layoutOverlay() + paintOverlay() in src/main.cpp, into an ink array pw wide.
+function paintBoardOverlay(ink, pw, o, g, counter) {
+  const n = g[2], gw = g[0], gh = g[1], stride = Math.ceil(gw / 8), adv = g.subarray(3, 3 + n), bits = 3 + n;
+  const digits = String(Math.max(0, boardValue(o, counter))), idx = [];
+  [...digits].forEach((c, i) => {
+    if (o.sep && n > 10 && i > 0 && (digits.length - i) % 3 === 0) idx.push(10);
+    idx.push(Number(c));
+  });
+  if (o.mode === 3 && n > 11) idx.push(11);
+  const sc = o.scale || 1, total = idx.reduce((a, k) => a + adv[k] * sc, 0);
+  let x = o.align === 2 ? o.x + o.w - total : o.align === 1 ? o.x + Math.floor((o.w - total) / 2) : o.x;
+  for (let yy = o.y; yy < o.y + o.h; yy++) ink.fill(0, yy * pw + o.x, yy * pw + o.x + o.w);
+  for (const k of idx) {
+    const base = bits + k * gh * stride;
+    for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+      if (!(g[base + gy * stride + (gx >> 3)] & (0x80 >> (gx & 7)))) continue;
+      for (let dx = 0; dx < sc; dx++) {
+        const px = x + (gx - 2) * sc + dx;
+        if (px < o.x || px >= o.x + o.w) continue;
+        for (let dy = 0; dy < sc && gy * sc + dy < o.h; dy++) ink[(o.y + gy * sc + dy) * pw + px] = (o.color || 0) + 1;
+      }
+    }
+    x += adv[k] * sc;
+  }
+}
+
+function fitInk(ink, pw, ph, counter = 0) {
+  const k = Math.min(pw / W, ph / H), ow = Math.round(W * k), oh = Math.round(H * k);
+  const ox = Math.floor((pw - ow) / 2), oy = Math.floor((ph - oh) / 2);
+  const out = new Uint8Array(pw * ph);
+  for (let y = 0; y < oh; y++) {
+    const sy = Math.min(H - 1, Math.floor(y / k)), row = (oy + y) * pw + ox;
+    for (let x = 0; x < ow; x++) out[row + x] = ink[sy * W + Math.min(W - 1, Math.floor(x / k))];
+  }
+  const g = buildGlyphs();
+  out.overlays = (ink.overlays || []).map(o => {
+    const sc = Math.max(1, Math.min(4, Math.round((o.scale || 1) * k)));
+    const m = {...o, x: ox + Math.floor(o.x * k), y: oy + Math.floor(o.y * k), w: Math.floor(o.w * k), scale: sc};
+    m.h = Math.min(Math.floor(o.h * k), ph - m.y);
+    paintBoardOverlay(out, pw, m, g, counter);
+    return m;
+  });
+  return out;
+}
 // ---------- more pages: countdown, move details, IV/EV chart, evolutions, Pokédex entry ----------
 const teamPer = s => [2, 3].includes(Number(s.teamPer)) ? Number(s.teamPer) : 6;
 
@@ -2599,7 +2805,7 @@ function drawTeamRow(ctx, s, acc, a) {
 // (paintOverlay in src/main.cpp).
 function digitRun(str) {
   const g = buildGlyphs(), n = g[2], sep = numSep();
-  const idx = [...String(str)].map(ch => ch === sep ? 10 : ch >= '0' && ch <= '9' ? Number(ch) : -1).filter(k => k >= 0 && k < n);
+  const idx = [...String(str)].map(ch => ch === sep ? 10 : ch === '%' ? 11 : ch >= '0' && ch <= '9' ? Number(ch) : -1).filter(k => k >= 0 && k < n);
   return {g, idx, width: idx.reduce((a, k) => a + g[3 + k], 0)};
 }
 function drawDigits(ctx, str, x0, y0, w, align, scale, color) {
@@ -2809,6 +3015,312 @@ Object.assign(PAGES, {
       if (lines.length > 5) { lines = wrapLines(fl, 8, false, 372).slice(0, 9); px = 8; lh = 11; }
       const top = 180 + Math.max(0, Math.floor((102 - lines.length * lh) / 2));
       lines.forEach((l, i) => text(ctx, l, 14, top + i * lh, px, false, BLACK));
+    },
+  },
+});
+// ---------- pages added in 2.0: Who's that Pokémon?, shiny hunt, Pokédex progress, item of the day ----------
+
+// n distinct random numbers in [lo, hi] from a seed (same generator as dailyIds).
+function seededIds(seed, n, lo, hi) {
+  let a = (Number(seed) || 1) >>> 0;
+  const rnd = () => { a = (a + 0x6D2B79F5) >>> 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const ids = [], span = hi - lo + 1;
+  n = Math.min(n, span);
+  while (ids.length < n) { const id = lo + Math.floor(rnd() * span); if (!ids.includes(id)) ids.push(id); }
+  return ids;
+}
+const poolN = (v, def = 7) => Math.max(1, Math.min(14, Math.round(Number(v) || def)));
+const wtpIds = (s = state) => seededIds(s.wtpSeed, poolN(s.wtpCount), 1, (SPRITES[s.style] || SPRITES.pt).max);
+const BERRIES = 64;      // PokeAPI berry/1..64
+const itemIds = (s = state) => seededIds(s.itemSeed, poolN(s.itemCount), 1, s.itemKind === 'berry' ? BERRIES : ITEM_MAX);
+const ITEM_MAX = 300;    // item/1..300: balls, medicine, evolution and held items (most have an icon)
+
+// Pools: the board changes them with the "of the day" schedule. Who's that Pokémon? is
+// two entries over the same pool, so the answer always follows its own silhouette.
+POOL_PAGES.whosthat = (s, part) => ({mode: 'd', jobs: wtpIds(s).map(id => ({key: 'whosthat', s: {...s, _wtpId: id}, part}))});
+POOL_PAGES.itemday = (s, part) => ({mode: 'd', jobs: itemIds(s).map(id => ({key: 'itemday', s: {...s, _itemId: id}, part}))});
+
+// Every opaque pixel black: the classic silhouette.
+const silhouetteOf = sp => sp && {w: sp.w, h: sp.h, at: (i, y) => sp.at(i, y)[3] >= 128 ? [0, 0, 0, 255] : [255, 255, 255, 0]};
+
+// Numbers in the glyph strip (digits, separator, %), at any scale: drawDigits with '%'.
+const SHINY_ODDS = [4096, 8192, 1365, 683, 512, 1024, 2731];
+
+function parseRanges(str, lo, hi) {
+  const out = new Set();
+  for (const part of String(str || '').split(/[\s,;]+/)) {
+    const m = part.match(/^#?(\d+)(?:-#?(\d+))?$/);
+    if (!m) continue;
+    const a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+    for (let k = Math.max(lo, Math.min(a, b)); k <= Math.min(hi, Math.max(a, b)); k++) out.add(k);
+  }
+  return out;
+}
+const dexRange = s => s.dexScope && /^gen[1-9]$/.test(s.dexScope) ? GEN_RANGES[Number(s.dexScope[3]) - 1] : [1, 1025];
+function dexCaught(s) {
+  const [lo, hi] = dexRange(s), got = parseRanges(s.dexCaught, lo, hi);
+  if (s.dexUseCol) {
+    const add = id => { id = Number(id); if (id >= lo && id <= hi) got.add(id); };
+    add(s.dex);
+    for (const c of s.collection || []) add(c.data?.dex);
+    String(s.team || '').split(/[\s,]+/).forEach(add);
+  }
+  return got;
+}
+
+Object.assign(PAGES, {
+  whosthat: {
+    parts: () => 2,          // 1: silhouette, 2: answer
+    header: (s, a) => [s._part ? (a?.name || '—') : '???', '-'],
+    async prepare(s) {
+      const ids = wtpIds(s), id = s._wtpId ?? ids[dailyPickNow(ids.length)];
+      const [sp, img] = await Promise.all([pj(`pokemon-species/${id}`).catch(() => null),
+        getSprite(spriteUrl(s.style, id, false)).catch(() => null)]);
+      return {id, name: sp ? locName(sp) : '#' + id, img, blits: []};
+    },
+    draw(ctx, s, acc, a) {
+      let sp = null;
+      try { sp = a.img && spritePixels(a.img); } catch { sp = null; }
+      const reveal = !!s._part;
+      if (sp) a.blits.push({sp: reveal ? sp : silhouetteOf(sp), area: [90, 40, 220, 196], fit: true, crisp: true});
+      const q = reveal ? d('wtp_a', {n: up(a.name)}) : d('wtp_q');
+      wrapLines(up(q), 16, true, 380).slice(0, 2).forEach((l, i, all) =>
+        text(ctx, l, W / 2, (all.length > 1 ? 242 : 252) + i * 19, 16, true, reveal ? acc : BLACK, 'center'));
+      if (!reveal) for (const [x, y] of [[40, 90], [348, 120], [62, 180], [330, 60]]) text(ctx, '?', x, y, 16, true, BLACK, 'center');
+    },
+    finish(ink, s, opt, a) { raysBackdrop(ink, 31, s._part ? 0.2 : 0.35, [[84, 36, 232, 204], [0, 236, W, H - 236], [28, 54, 26, 150], [334, 48, 26, 150]]); },
+  },
+  shiny: {
+    header: (s, a) => [a?.name || s.name, '-'],
+    async prepare(s) {
+      const id = Number(s.shTarget) || Number(s.dex) || 1;
+      const [sp, img] = await Promise.all([pj(`pokemon-species/${id}`).catch(() => null),
+        getSprite(spriteUrl(s.style, id, true)).catch(() => getSprite(spriteUrl(s.style, id, false)).catch(() => null))]);
+      return {id, name: sp ? locName(sp) : s.name, img, blits: [], overlays: []};
+    },
+    draw(ctx, s, acc, a) {
+      let sp = null;
+      try { sp = a.img && spritePixels(a.img); } catch { sp = null; }
+      if (sp) a.blits.push({sp, area: [12, 40, 176, 210], valign: 'bottom'});
+      ctx.fillStyle = BLACK; ctx.fillRect(12, 252, 176, 2);
+      text(ctx, `#${String(a.id).padStart(4, '0')}`, 12, 262, 16, true, BLACK);
+      const x = 200, w = 190, odds = Math.max(2, Number(s.shOdds) || 4096);
+      const count = Math.max(0, Math.round(Number(deviceInfo?.counter ?? s.shCount) || 0));
+      text(ctx, up(d('sh_count')), x, 40, 8, true, acc);
+      const big = fmtNum(count), scale = [3, 2].find(k => digitRun(fmtNum(Math.max(count, 99999))).width * k <= w) || 2;
+      drawDigits(ctx, big, x, 54, w, 0, scale, BLACK);
+      a.overlays.push({x, y: 54, w, h: GLYPH_H * scale, align: 0, start: 0, color: 0, sep: 1, mode: 2, scale});
+      const y2 = 64 + GLYPH_H * scale;
+      text(ctx, up(d('sh_chance')), x, y2, 8, true, acc);
+      const pct = Math.floor(100 * (1 - Math.pow(1 - 1 / odds, count)));
+      drawDigits(ctx, pct + '%', x, y2 + 12, w, 0, 2, BLACK);
+      a.overlays.push({x, y: y2 + 12, w, h: GLYPH_H * 2, align: 0, start: odds, color: 0, sep: 0, mode: 3, scale: 2});
+      const y3 = y2 + 24 + GLYPH_H * 2;
+      field(ctx, d('sh_odds'), `1/${fmtNum(odds)}`, x, y3, w, acc);
+      wrapLines(up(s.shMethod || ''), 8, true, w).slice(0, 2).forEach((l, i) => text(ctx, l, x, y3 + 32 + i * 11, 8, true, BLACK));
+      wrapLines(up(s.shPhases || ''), 8, false, w).slice(0, 4).forEach((l, i) => text(ctx, l, x, 236 + i * 11, 8, false, BLACK));
+    },
+  },
+  dexprog: {
+    header: s => [s.trName || d('dexprog'), '-'],
+    draw(ctx, s, acc) {
+      const [lo, hi] = dexRange(s), n = hi - lo + 1, got = dexCaught(s), have = got.size;
+      text(ctx, up(d(s.dexScope && s.dexScope !== 'national' ? 'dex_gen' : 'dex_nat', {g: String(s.dexScope || '').slice(3)})), 10, 38, 8, true, acc);
+      drawDigits(ctx, fmtNum(have), 10, 50, 190, 0, 2, BLACK);
+      const pct = Math.floor(100 * have / n);
+      text(ctx, `/ ${fmtNum(n)}`, 10 + digitRun(fmtNum(have)).width * 2 + 8, 66, 16, false, BLACK);
+      drawDigits(ctx, pct + '%', 210, 50, 180, 2, 2, acc);
+      box(ctx, 10, 86, 380, 10, false);
+      ctx.fillStyle = acc; ctx.fillRect(12, 88, Math.round(376 * have / n), 6);
+      // one square per species: filled = caught
+      const top = 104, aw = 380, ah = 178;
+      let c = Math.min(24, Math.floor(Math.sqrt(aw * ah / n)));
+      while (c > 3 && Math.ceil(n / Math.floor(aw / c)) * c > ah) c--;
+      const cols = Math.floor(aw / c), x0 = 10 + Math.floor((aw - cols * c) / 2);
+      for (let k = 0; k < n; k++) {
+        const x = x0 + (k % cols) * c, y = top + Math.floor(k / cols) * c, id = lo + k;
+        if (got.has(id)) { ctx.fillStyle = BLACK; ctx.fillRect(x, y, c - 1, c - 1); }
+        else if (c >= 5) box(ctx, x, y, c - 1, c - 1, false);
+        else { ctx.fillStyle = BLACK; ctx.fillRect(x + (c >> 1) - 1, y + (c >> 1) - 1, 1, 1); }
+      }
+    },
+  },
+  itemday: {
+    header: (s, a) => [a?.name || '—', '-'],
+    async prepare(s) {
+      const ids = itemIds(s), id = s._itemId ?? ids[dailyPickNow(ids.length)];
+      const lang = state.dispLang;
+      let berry = null, item = null;
+      if (s.itemKind === 'berry') { berry = await pj(`berry/${id}`); item = await pj(berry.item.url); }
+      else {
+        // not every item id has an icon: take the next one that does
+        for (let k = 0; k < 6 && !item?.sprites?.default; k++) item = await pj(`item/${(id - 1 + k) % ITEM_MAX + 1}`).catch(() => null);
+        if (!item) throw new Error('item ' + id);
+      }
+      const [cat, img] = await Promise.all([item.category ? pj(item.category.url).catch(() => null) : null,
+        item.sprites?.default ? getSprite(item.sprites.default).catch(() => null) : null]);
+      const fl = item.flavor_text_entries || [];
+      const flavor = ((fl.filter(e => e.language.name === lang).at(-1)) || fl.filter(e => e.language.name === 'en').at(-1) || {}).text || '';
+      return {name: locName(item, lang), cat: cat ? locName(cat, lang) : slugWords(item.category?.name), cost: item.cost,
+        fling: item.fling_power, berry, flavor: flavor.replace(/\s+/g, ' '), img, blits: []};
+    },
+    draw(ctx, s, acc, a) {
+      let sp = null;
+      try { sp = a.img && spritePixels(a.img); } catch { sp = null; }
+      if (sp) a.blits.push({sp, area: [14, 40, 150, 150], fit: true});
+      ctx.fillStyle = BLACK; ctx.fillRect(14, 194, 150, 2);
+      const x = 180, w = 210;
+      const rows = [[d('it_cat'), a.cat]];
+      if (a.berry) rows.push([d('it_firm'), slugWords(a.berry.firmness?.name)], [d('it_size'), `${a.berry.size} mm`],
+        [d('it_grow'), `${a.berry.growth_time} h`]);
+      else { if (a.cost) rows.push([d('it_cost'), fmtNum(a.cost)]); if (a.fling) rows.push([d('it_fling'), String(a.fling)]); }
+      rows.slice(0, 4).forEach(([l, v], i) => field(ctx, l, v, x, 40 + i * 38, w, acc));
+      const fl = up(a.flavor || d('flavor_none'));
+      let lines = wrapLines(fl, 16, false, 372), px = 16, lh = 19;
+      if (lines.length > 4) { lines = wrapLines(fl, 8, false, 372).slice(0, 7); px = 8; lh = 11; }
+      const top = 202 + Math.max(0, Math.floor((82 - lines.length * lh) / 2));
+      lines.forEach((l, i) => text(ctx, l, 14, top + i * lh, px, false, BLACK));
+    },
+  },
+});
+// ---------- split screen and your own images ----------
+
+// Split screen: 2 or 4 small widgets on one page. Counters keep working: the board
+// redraws the boxes of the days, countdown and shiny widgets by itself.
+const SPLIT_LAYOUTS = {
+  h2: [[8, 36, 188, 248], [204, 36, 188, 248]],
+  v2: [[8, 36, 384, 120], [8, 164, 384, 120]],
+  q4: [[8, 36, 188, 120], [204, 36, 188, 120], [8, 164, 188, 120], [204, 164, 188, 120]],
+};
+const SPLIT_WIDGETS = ['sprite', 'days', 'countdown', 'shiny', 'team', 'dexprog', 'stats', 'none'];
+const splitCells = s => (SPLIT_LAYOUTS[s.splitLayout] || SPLIT_LAYOUTS.q4).map((r, i) => [r, s['splitW' + i] || ['sprite', 'days', 'team', 'stats'][i]]);
+
+// One number box that the board updates: label above, digits at the largest scale that fits.
+function widgetNumber(ctx, a, r, label, value, mode, start, acc) {
+  const [x, y, w, h] = r;
+  text(ctx, up(label), x + 4, y + 4, 8, true, acc, 'left', w - 8);
+  const str = fmtNum(Math.max(0, value ?? 0)), room = mode === 2 ? fmtNum(Math.max(value, 99999)) : str;
+  const scale = [3, 2, 1].find(k => digitRun(room).width * k <= w - 8 && GLYPH_H * k <= h - 20) || 1;
+  const ny = y + 18 + Math.max(0, Math.floor((h - 22 - GLYPH_H * scale) / 2));
+  drawDigits(ctx, str, x + 4, ny, w - 8, 0, scale, BLACK);
+  if (mode != null) a.overlays.push({x: x + 4, y: ny, w: w - 8, h: GLYPH_H * scale, align: 0, start, color: 0, sep: 1, mode, scale});
+}
+
+const WIDGETS = {
+  sprite: {
+    load: async s => ({img: await getSprite(spriteUrl(s.style, s.dex, s.shiny)).catch(() => null)}),
+    draw(ctx, s, acc, r, a, L) {
+      const [x, y, w, h] = r;
+      let sp = null;
+      try { sp = L.img && spritePixels(L.img); } catch { sp = null; }
+      if (sp) a.blits.push({sp, area: [x + 2, y + 2, w - 4, h - 20], valign: 'bottom', fit: true});
+      text(ctx, up(s.name), x + w / 2, y + h - 14, 8, true, BLACK, 'center', w - 8);
+    },
+  },
+  days: {draw(ctx, s, acc, r, a) { const st = sinceDay(s); widgetNumber(ctx, a, r, d('days'), st != null ? todayDay() - st : 0, st != null ? 0 : null, st ?? 0, acc); }},
+  countdown: {draw(ctx, s, acc, r, a) { const tg = parseDay(s.cdDate); widgetNumber(ctx, a, r, s.cdTitle || d('days_left'), tg != null ? tg - todayDay() : 0, tg != null ? 1 : null, tg ?? 0, acc); }},
+  shiny: {draw(ctx, s, acc, r, a) { widgetNumber(ctx, a, r, d('sh_count'), Math.round(Number(deviceInfo?.counter ?? s.shCount) || 0), 2, 0, acc); }},
+  team: {
+    load: async s => ({imgs: await Promise.all(teamIds(s).slice(0, 6).map(id => getSprite(iconUrl(id)).catch(() => getSprite(spriteUrl(s.style, id, false)).catch(() => null))))}),
+    draw(ctx, s, acc, r, a, L) {
+      const [x, y, w, h] = r, n = L.imgs.length, cols = n > 4 || w > h * 1.6 ? 3 : 2, rows = Math.ceil(n / cols) || 1;
+      text(ctx, up(d('team')), x + 4, y + 4, 8, true, acc);
+      const cw = Math.floor((w - 4) / cols), ch = Math.floor((h - 18) / rows);
+      L.imgs.forEach((img, i) => {
+        let sp = null;
+        try { sp = img && spritePixels(img); } catch { sp = null; }
+        if (sp) a.blits.push({sp, area: [x + 2 + (i % cols) * cw, y + 16 + Math.floor(i / cols) * ch, cw, ch], fit: true});
+      });
+    },
+  },
+  dexprog: {
+    draw(ctx, s, acc, r) {
+      const [x, y, w, h] = r, [lo, hi] = dexRange(s), n = hi - lo + 1, have = dexCaught(s).size;
+      text(ctx, up(d('dexprog')), x + 4, y + 4, 8, true, acc);
+      drawDigits(ctx, Math.floor(100 * have / n) + '%', x + 4, y + 18, w - 8, 0, h > 90 ? 2 : 1, BLACK);
+      text(ctx, `${fmtNum(have)} / ${fmtNum(n)}`, x + 4, y + h - 32, 8, false, BLACK);
+      box(ctx, x + 4, y + h - 18, w - 8, 10, false);
+      ctx.fillStyle = acc; ctx.fillRect(x + 6, y + h - 16, Math.round((w - 12) * have / n), 6);
+    },
+  },
+  stats: {
+    draw(ctx, s, acc, r) {
+      const [x, y, w, h] = r, keys = ['ps', 'att', 'dif', 'atsp', 'dfsp', 'vel'], lh = Math.floor((h - 8) / 6);
+      keys.forEach((k, i) => {
+        const yy = y + 4 + i * lh, v = Number(s[k]) || 0;
+        text(ctx, up(d(k)), x + 4, yy + Math.floor((lh - 8) / 2), 8, true, BLACK, 'left', 52);
+        text(ctx, String(v), x + 92, yy + Math.floor((lh - 8) / 2), 8, false, BLACK, 'right');
+        box(ctx, x + 98, yy + 2, w - 104, Math.max(4, lh - 4), false);
+        ctx.fillStyle = i === 5 ? acc : BLACK; ctx.fillRect(x + 100, yy + 4, Math.round((w - 108) * Math.min(v, 255) / 255), Math.max(1, lh - 8));
+      });
+    },
+  },
+  none: {draw() {}},
+};
+
+// Your own pictures: stored on the board (/www/img/…), one per turn ('v' pool: the next
+// picture every time the entry comes up). Dithered with Floyd-Steinberg to the inks.
+const boardUrl = path => {
+  const base = String(state.deviceUrl || '').trim().replace(/\/+$/, '');
+  return base ? (/^https?:\/\//i.test(base) ? base : 'http://' + base) + '/' + path : path;
+};
+POOL_PAGES.images = (s, part) => ({mode: 'v', jobs: (s.images?.length ? s.images : [null]).map((im, k) => ({key: 'images', s: {...s, _img: k}, part}))});
+
+function ditherFS(rgba, w, h, palette) {
+  const inks = palette.map(c => [c, INKS[c].rgb]), err = new Float32Array(w * h * 3), out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x, o = i * 4;
+    const r = rgba[o] + err[i * 3], g = rgba[o + 1] + err[i * 3 + 1], b = rgba[o + 2] + err[i * 3 + 2];
+    let best = inks[0], bd = Infinity;
+    for (const k of inks) { const dd = 2 * (r - k[1][0]) ** 2 + 4 * (g - k[1][1]) ** 2 + 3 * (b - k[1][2]) ** 2; if (dd < bd) { bd = dd; best = k; } }
+    out[i] = best[0];
+    const er = [r - best[1][0], g - best[1][1], b - best[1][2]];
+    for (const [dx, dy, f] of [[1, 0, 7 / 16], [-1, 1, 3 / 16], [0, 1, 5 / 16], [1, 1, 1 / 16]]) {
+      const xx = x + dx, yy = y + dy;
+      if (xx < 0 || xx >= w || yy >= h) continue;
+      const j = (yy * w + xx) * 3;
+      err[j] += er[0] * f; err[j + 1] += er[1] * f; err[j + 2] += er[2] * f;
+    }
+  }
+  return out;
+}
+
+Object.assign(PAGES, {
+  split: {
+    header: s => [s.splitTitle || s.name, s.splitTitle ? '-' : s.gender],
+    async prepare(s) {
+      const cells = splitCells(s);
+      const loads = await Promise.all(cells.map(([, k]) => WIDGETS[k]?.load ? WIDGETS[k].load(s).catch(() => ({})) : {}));
+      return {cells, loads, blits: [], overlays: []};
+    },
+    draw(ctx, s, acc, a) {
+      a.cells.forEach(([r, k], i) => {
+        box(ctx, r[0], r[1], r[2], r[3], false);
+        (WIDGETS[k] || WIDGETS.none).draw(ctx, s, acc, [r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2], a, a.loads[i] || {});
+      });
+      a.overlays.length = Math.min(a.overlays.length, 4);
+    },
+  },
+  images: {
+    bare: true,       // the picture is the page: no header, no page dots
+    async prepare(s) {
+      const list = s.images || [], it = list[s._img ?? state._previewImg ?? 0] || list[0];
+      const img = it ? await loadLocalImage(boardUrl(it.src)) : null;
+      return {it, img, blits: []};
+    },
+    draw(ctx, s, acc, a) {
+      if (!a.img) { text(ctx, up(t('im_none')), W / 2, 140, 8, true, BLACK, 'center', 380); return; }
+      const iw = a.img.naturalWidth, ih = a.img.naturalHeight, cap = a.it.caption ? 22 : 0, ah = H - cap;
+      const k = a.it.fit === 'contain' ? Math.min(W / iw, ah / ih) : Math.max(W / iw, ah / ih);
+      ctx.fillStyle = WHITE; ctx.fillRect(0, 0, W, H);
+      ctx.drawImage(a.img, (W - iw * k) / 2, (ah - ih * k) / 2, iw * k, ih * k);
+      a.photo = ctx.getImageData(0, 0, W, ah).data;       // dithered in finish()
+      if (cap) { ctx.fillStyle = BLACK; ctx.fillRect(0, ah, W, cap); text(ctx, up(a.it.caption), W / 2, ah + 7, 8, true, WHITE, 'center', 380); }
+    },
+    finish(ink, s, opt, a) {
+      if (!a.photo) return;
+      const h = a.photo.length / 4 / W, out = ditherFS(a.photo, W, h, panelOf(s).palette.map(inkCode));
+      ink.set(out, 0);
     },
   },
 });
@@ -3333,6 +3845,50 @@ async function saveSettingsOnly() {
     await readInfo(); renderPowerBox();
   } catch (e) { $('pwSt').textContent = t('st_err', {e: e.message}); }
 }
+// ---------- shiny hunt: the board's counter ----------
+// The count lives on the board (NVS), so the button can add encounters with the web UI
+// closed: Display -> Button -> "Counter +1". Here: read it, change it, set it.
+function buildShinyBox() {
+  const fs = document.querySelector('fieldset[data-group="shiny"]');
+  if (!fs || $('shinybox')) return;
+  const box = document.createElement('div'); box.className = 'trbox'; box.id = 'shinybox';
+  box.innerHTML = `<div class="row" style="margin-top:0;align-items:center">
+    <strong id="scVal" style="font-size:28px;min-width:3.5em"></strong>
+    <button type="button" id="scMinus"></button><button type="button" class="primary" id="scPlus"></button>
+    <input type="number" id="scSet" min="0" style="width:8em"><button type="button" id="scSetB"></button>
+    <button type="button" id="scReset"></button></div><div class="muted" id="scInfo"></div>`;
+  fs.querySelector('legend').after(box);
+  $('scPlus').onclick = () => counterCall({add: 1});
+  $('scMinus').onclick = () => counterCall({add: -1});
+  $('scSetB').onclick = () => counterCall({set: Math.max(0, Math.round(Number($('scSet').value) || 0))});
+  $('scReset').onclick = () => { if (confirm(t('sc_reset_c'))) counterCall({set: 0}); };
+  renderShinyBox();
+}
+
+function renderShinyBox() {
+  if (!$('shinybox')) return;
+  const on = !!deviceInfo && String(deviceInfo.features || '').split(',').includes('counter');
+  const v = on ? deviceInfo.counter : Number(state.shCount) || 0;
+  $('scVal').textContent = fmtNum(v);
+  $('scPlus').textContent = '+1'; $('scMinus').textContent = '−1';
+  $('scSetB').textContent = t('sc_set'); $('scReset').textContent = t('sc_reset');
+  $('scSet').placeholder = String(v);
+  $('scInfo').textContent = t(on ? 'sc_info' : 'sc_nodev');
+}
+
+async function counterCall(q) {
+  if (!deviceInfo) {         // no board: the count is kept in the browser and shown in the preview
+    state.shCount = Math.max(0, q.set ?? (Number(state.shCount) || 0) + q.add);
+    renderShinyBox(); scheduleRender(); saveState(true); return;
+  }
+  try {
+    const r = await fetch(api('/api/counter?' + new URLSearchParams(q)), {method: 'POST'});
+    if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? t('sy_key_bad') : 'HTTP ' + r.status);
+    deviceInfo.counter = (await r.json()).counter;
+    state.shCount = deviceInfo.counter;
+    renderShinyBox(); scheduleRender();
+  } catch (e) { setStatus(t('st_err', {e: e.message})); }
+}
 // ---------- Showdown import ----------
 // Export format: "Nick (Species) (M) @ Item", "Ability: X", "Level: 50", "Shiny: Yes",
 // "EVs: 252 HP / 4 Def", "Modest Nature", "IVs: 0 Atk", "- Move" (one per line).
@@ -3423,6 +3979,76 @@ function buildShowdownBox() {
   };
 }
 
+// ---------- your pictures (page "Your images") ----------
+// Kept on the board under /www/img/ (not in the saved data: too big), at 400x300.
+function buildGalleryBox() {
+  const fs = document.querySelector('fieldset[data-group="gallery"]');
+  if (!fs || $('gallerybox')) return;
+  const box = document.createElement('div'); box.className = 'trbox'; box.id = 'gallerybox';
+  box.innerHTML = `<div class="muted" id="gaInfo"></div><div class="galist" id="gaList"></div>
+    <div class="cur"><label class="chk" style="cursor:pointer"><input type="file" id="gaFile" accept="image/*" multiple hidden><span id="gaUp" class="btnlike"></span></label>
+    <span class="muted" id="gaSt"></span></div>`;
+  fs.querySelector('legend').after(box);
+  $('gaFile').addEventListener('change', async ev => {
+    const files = [...(ev.target.files || [])]; ev.target.value = '';
+    if (!files.length) return;
+    if (!deviceInfo) { $('gaSt').textContent = t('im_nodev'); return; }
+    state.images = [...(state.images || [])];
+    for (let i = 0; i < files.length; i++) {
+      $('gaSt').textContent = t('sy_sending', {f: files[i].name, i: i + 1, n: files.length});
+      try {
+        const jpg = await pictureToJpeg(files[i]);
+        const name = `img/${Date.now().toString(36)}${i}.jpg`;
+        await xhrUpload(api('/api/fs?path=' + encodeURIComponent('/www/' + name)), new File([jpg], 'p.jpg'), 'file');
+        state.images.push({src: name, fit: 'cover', caption: ''});
+      } catch (e) { $('gaSt').textContent = t('sy_err', {e: e.message}); break; }
+    }
+    if (!/^Error|Errore/.test($('gaSt').textContent)) $('gaSt').textContent = '';
+    renderGalleryBox(); buildTabs(); scheduleRender(); saveState(true);
+  });
+  renderGalleryBox();
+}
+
+// Cover-crop to 400x300 (the screen), JPEG: about 30 KB per picture.
+async function pictureToJpeg(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadLocalImage(url);
+    if (!img) throw new Error(t('tr_bad'));
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
+    const k = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+    x.drawImage(img, (W - img.naturalWidth * k) / 2, (H - img.naturalHeight * k) / 2, img.naturalWidth * k, img.naturalHeight * k);
+    return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.85));
+  } finally { URL.revokeObjectURL(url); }
+}
+
+function renderGalleryBox() {
+  if (!$('gallerybox')) return;
+  $('gaInfo').textContent = t('im_info');
+  $('gaUp').textContent = t('im_up');
+  const list = state.images || [];
+  const changed = () => { scheduleRender(); saveState(true); };
+  $('gaList').replaceChildren(...list.map((it, i) => {
+    const row = document.createElement('div'); row.className = 'garow';
+    const img = document.createElement('img'); img.alt = ''; img.src = boardUrl(it.src);
+    const cap = document.createElement('input'); cap.placeholder = t('im_caption'); cap.value = it.caption || '';
+    cap.oninput = () => { it.caption = cap.value; changed(); };
+    const fit = document.createElement('select');
+    for (const k of ['cover', 'contain']) fit.add(new Option(t('im_' + k), k));
+    fit.value = it.fit || 'cover'; fit.oninput = () => { it.fit = fit.value; changed(); };
+    const show = document.createElement('button'); show.type = 'button'; show.textContent = t('col_preview');
+    show.onclick = () => { previewPage = 'images'; previewPart = 0; previewCard = null; state._previewImg = i; buildTabs(); render(); };
+    const del = document.createElement('button'); del.type = 'button'; del.textContent = t('remove');
+    del.onclick = async () => {
+      if (deviceInfo) await fetch(api('/api/fs/delete?path=' + encodeURIComponent('/www/' + it.src)), {method: 'POST'}).catch(() => {});
+      state.images = list.filter((_, k) => k !== i);
+      renderGalleryBox(); buildTabs(); changed();
+    };
+    row.append(img, cap, fit, show, del);
+    return row;
+  }));
+}
 // ---------- import from PKHeX files (.pk4 .pk5 .pk6 .pk7 .pk8 .pk9) ----------
 // Formats, offsets, ribbon bits and game texts come from PKHeX (GPL-3.0) via
 // tools/build_pkx_data.py -> pkx/core.json.gz, pkx/<lang>.json.gz.
@@ -4135,7 +4761,7 @@ function crc32(bytes) {
   return ~c >>> 0;
 }
 const minutesOf = hhmm => { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : -1; };
-const overlayArg = o => o ? [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep, o.mode || 0, o.scale || 1].join(',') : '';
+const overlayArg = list => (list || []).map(o => [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep, o.mode || 0, o.scale || 1].join(',')).join(';');
 
 // Pages go to slots in rotation order (each entry's pool in a row), then the rotation.
 // With firmware 2.0 they are uploaded to a staging copy and switched over by the last
@@ -4144,7 +4770,9 @@ async function sendAll() {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
   const plan = rotationPlan();
   if (!plan.length) { setStatus(t('st_no_pages')); return; }
-  if ((deviceInfo.w ?? W) !== W || (deviceInfo.h ?? H) !== H) { setStatus(t('st_size', {w: W, h: H, pw: deviceInfo.w, ph: deviceInfo.h})); return; }
+  const pw = deviceInfo.w ?? W, ph = deviceInfo.h ?? H;
+  // smaller panels need their own layouts; bigger ones get the pages scaled up (46-fit.js)
+  if (pw < W || ph < H || ((pw !== W || ph !== H) && !(deviceInfo.api >= 2))) { setStatus(t('st_size', {w: W, h: H, pw, ph})); return; }
   const dxf = deviceInfo.api >= 2;     // older firmware: raw two-plane pages, fixed size
   const feat = String(deviceInfo.features || '').split(',');
   const pools = feat.includes('pools');
@@ -4162,9 +4790,13 @@ async function sendAll() {
     await Promise.all(Array.from({length: Math.min(4, jobs.length)}, async () => {
       while (next < jobs.length) {
         const i = next++, j = jobs[i];
-        const ink = await renderPage(j.key, j.s, j.idx, dots, j.part);
-        const data = dxf ? encodeFrame(ink, W, H, bpp) : pack(ink);
-        frames[i] = {data, ov: overlayArg(ink.overlay), crc: crc32(data)};
+        let ink = await renderPage(j.key, j.s, j.idx, dots, j.part);
+        if (pw !== W || ph !== H) ink = fitInk(ink, pw, ph, deviceInfo.counter || 0);
+        const data = dxf ? encodeFrame(ink, pw, ph, bpp) : pack(ink);
+        // only the number boxes this firmware can redraw: modes/scale from 1.6, the counter from 2.0, several from 2.0
+        ink.overlays = ink.overlays.filter(o => (feat.includes('countdown') || (!o.mode && (o.scale || 1) === 1)) && (feat.includes('counter') || (o.mode || 0) < 2));
+        if (!feat.includes('overlays')) ink.overlays.length = Math.min(1, ink.overlays.length);
+        frames[i] = {data, ov: overlayArg(ink.overlays), crc: crc32(data)};
         setStatus(t('st_rendering', {i: ++done, n: jobs.length}));
       }
     }));
@@ -4225,10 +4857,10 @@ async function sendAll() {
 
 // Puts one page of the rotation on the e-paper now (POST /api/show?slot=<rotation entry>).
 // Only when the board holds the rotation listed here: otherwise the numbers differ.
-async function showOnDevice(key, part = 0, sub = 0) {
+async function showOnDevice(key, part = 0) {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
   if (!boardMatches()) { setStatus(t('st_show_stale')); return; }
-  const idx = key == null ? -1 : rotationIndex(key, part, sub);
+  const idx = key == null ? -1 : rotationIndex(key, part);
   if (idx < 0) { setStatus(t('st_show_none')); return; }
   const r = await fetch(api('/api/show?slot=' + idx), {method: 'POST'}).catch(() => null);
   const label = t('pg_' + key) + (pageParts(key) > 1 ? ' ' + (part + 1) : '');
@@ -4299,6 +4931,7 @@ function setConnected() {
   const bat = i.batteryMv > 1000 ? ' · ' + t('st_bat', {v: (i.batteryMv / 1000).toFixed(2)}) : '';
   renderSystemBox();
   renderPowerBox();
+  renderShinyBox();
   setStatus(t('st_connected', {w: i.w, h: i.h, mode: panelLabel(state.panel), c: i.current + 1, n: i.entries ?? i.count}) + bat);
 }
 
@@ -4313,6 +4946,8 @@ function migrate(st) {
   if (!Array.isArray(st.collection)) st.collection = [];
   st.collection = st.collection.filter(c => c && c.data).map(c => ({id: c.id || Math.random().toString(36).slice(2), data: c.data}));
   if (!st.dailySeed) st.dailySeed = (Date.now() % 2147483647) || 1;
+  if (!st.wtpSeed) st.wtpSeed = (st.dailySeed * 7 + 13) % 2147483647 || 1;
+  if (!st.itemSeed) st.itemSeed = (st.dailySeed * 11 + 29) % 2147483647 || 1;
   if (!PAGE_STYLES.includes(st.pageStyle)) st.pageStyle = 'classic';
   if (!FRAME_KEYS.includes(st.frame) || (st.frame === 'custom' && !st.frameImg)) st.frame = 'none';
   if (!st.pageFrame || typeof st.pageFrame !== 'object') st.pageFrame = {};
@@ -4321,7 +4956,7 @@ function migrate(st) {
 
 // Form sections as separate pages. The current one is kept in the URL hash, so a
 // reload or a bookmark (…/#ribbons) opens the same section.
-const SECTION_PAGE = {pokemon: 'cover', moves: 'moves', stats: 'stats', story: 'story', ribbons: 'ribbons', trainer: 'team', hof: 'hof'};
+const SECTION_PAGE = {pokemon: 'cover', moves: 'moves', stats: 'stats', story: 'story', ribbons: 'ribbons', trainer: 'team', hof: 'hof', shiny: 'shiny', split: 'split', gallery: 'images'};
 let section = GROUPS.some(([g]) => g === location.hash.slice(1)) ? location.hash.slice(1) : 'pokemon';
 
 function buildSections() {
@@ -4376,6 +5011,8 @@ async function applyUiLang() {
   buildStyleBox();
   buildFrameBox();
   buildPowerBox();
+  buildShinyBox();
+  buildGalleryBox();
   buildSystemBox();
   buildSections();
 }

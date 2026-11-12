@@ -92,3 +92,7 @@ details.adv .grid{margin-top:8px}
 .pgrow{flex-wrap:wrap}
 .pgrow label{flex:1 1 140px}
 #syInfo{white-space:pre-line}
+.galist{display:flex;flex-direction:column;gap:6px}
+.garow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+.garow img{width:80px;height:60px;object-fit:cover;border-radius:4px;background:#fff}
+.garow input{flex:1 1 120px;min-width:0}

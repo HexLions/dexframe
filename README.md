@@ -140,6 +140,35 @@ Off by default; turn them on in *Pages*.
 - **Team and Hall of Fame on several pages**: *Pages → Pokémon per page* 3 or 2 splits the six Pokémon over
   two or three pages with much larger sprites (exact 2× when they fit).
 
+## Games and trackers
+
+Also off by default, in *Pages*.
+
+- **Who's that Pokémon?**: a black silhouette, then (next page) the answer. A pool of 1–14 random Pokémon that
+  changes with the *of the day* schedule; the answer always follows its own silhouette.
+- **Shiny counter** (*Shiny hunt*): target Pokémon in its shiny sprite, encounters, the chance it should have
+  shown up by now for the chosen odds (1/4096, 1/8192, Shiny Charm, Masuda…), method and notes. The count lives
+  on the board: set the button's double click or long press to *Shiny counter +1* and count encounters with the
+  web UI closed; the number (and the chance) on screen update by themselves, with a partial refresh on B/W.
+  The web UI shows, adds, subtracts and sets it (`/api/counter`).
+- **Pokédex progress**: national or one generation, caught/total, a percentage bar and one square per
+  species. Caught numbers are typed as ranges (`1-151, 155`) and can include the collection, the card and the
+  team.
+- **Item of the day**: an item or a berry from PokeAPI with its icon, category, price or berry data and the
+  in-game text in the display language; a pool like the Pokémon of the day.
+
+## Split screen, your images, pushed pages
+
+- **Split screen** (*Split screen*): 2 side by side, 2 stacked or 4 boxes, each one a small widget: sprite,
+  days together, countdown, shiny counter, team, Pokédex progress, stats. The board keeps updating the
+  numbers of the days, countdown and shiny widgets by itself.
+- **Your images** (*Images*): pictures you add are cropped to 400×300, stored on the board (`/www/img/`,
+  about 30 KB each) and dithered (Floyd–Steinberg) to the panel's inks. The page shows a different one every
+  time it comes up, full screen, with an optional caption.
+- **Pushed pages**: `tools/push.py` sends a picture or a text from any computer or script; the board shows
+  it at once, for N minutes or until the next page change (`/api/push`). See
+  [docs/home-assistant.md](docs/home-assistant.md) for Home Assistant sensors, buttons and messages.
+
 ## Pages: order, timing, style
 
 - *Pages* lists every page: tick it, move it with the arrows, and optionally give it its own **minutes on
@@ -327,13 +356,16 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 | Method | Path | Body |
 |---|---|---|
 | GET | `/api/info` | → `{w,h,api,panel,panelName,palette,bpp,partial,pageBudget,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy,features,dailyAt,dailyEvery,dailyShuffle,dailyIndex,pools,order,quietInterval,pending,freeBytes,sleepOn,intervalMin,batLowMv,fullEvery,uptime,appSize,sketchSize}`; `pending` is true until the screen has finished drawing |
-| POST | `/api/frame?slot=N[&stage=1][&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = day-counter box, `color` 0 black, 1 red, 2 yellow…; two optional fields more: `mode` (0 days since, 1 days until) and `scale` (1–4) |
+| POST | `/api/frame?slot=N[&stage=1][&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = number boxes the board redraws by itself, up to 4 separated by `;`, each `x,y,w,h,align,day,color,sep[,mode,scale]`: `color` 0 black, 1 red, 2 yellow…; `mode` 0 days since `day`, 1 days until `day`, 2 the counter, 3 chance in % of a 1/`day` event after counter tries; `scale` 1–4 |
 | GET | `/api/pages` | → `[{slot,size,crc,ov}]` for the stored pages (CRC-32 of the file) |
 | POST | `/api/glyphs` | multipart file: digit strip for the day counter (`[gw,gh,n,adv[n],bitmaps]`) |
-| POST | `/api/rotation` | form: `pools` (one size per rotation entry: `1` a page, `7d` a pool of 7 that changes with the *of the day* schedule, `5v` a pool of 5 that moves on every time the entry comes up; slots are numbered across entries in order; older form: `count` + `daily`), `commit=1` (staged pages replace the live ones), `interval` (minutes, `0` = button only), `ord` (1 = random order per round), `qi` (minutes between pages during the quiet hours, 0 = none), `sleep` (0/1), `awake` (min), `qf`/`qt` (quiet hours, minutes of the day, -1 = off), `iv` (minutes per rotation entry, comma separated, 0 = default), `flip` (0/1), `dbl`/`lng` (button actions: 0 none, 1 next, 2 previous, 3 full refresh), `batlow` (mV), `fullevery`, `dat` (Pokémon of the day change time, minutes of the day), `dev` (every N days, 1–30), `dsh` (shuffle each round, 0/1), `tz` (POSIX), `now` (epoch s) |
+| POST | `/api/rotation` | form: `pools` (one size per rotation entry: `1` a page, `7d` a pool of 7 that changes with the *of the day* schedule, `5v` a pool of 5 that moves on every time the entry comes up; slots are numbered across entries in order; older form: `count` + `daily`), `commit=1` (staged pages replace the live ones), `interval` (minutes, `0` = button only), `ord` (1 = random order per round), `qi` (minutes between pages during the quiet hours, 0 = none), `sleep` (0/1), `awake` (min), `qf`/`qt` (quiet hours, minutes of the day, -1 = off), `iv` (minutes per rotation entry, comma separated, 0 = default), `flip` (0/1), `dbl`/`lng` (button actions: 0 none, 1 next, 2 previous, 3 full refresh, 4 counter +1, 5 counter −1), `batlow` (mV), `fullevery`, `dat` (Pokémon of the day change time, minutes of the day), `dev` (every N days, 1–30), `dsh` (shuffle each round, 0/1), `tz` (POSIX), `now` (epoch s) |
 | POST | `/api/settings` | the same settings as `/api/rotation` (any subset, no `count`/`daily`): stored without touching the pages; the page on screen is redrawn only if it changes |
 | POST | `/api/refresh` | full refresh of the page on screen |
 | POST | `/api/next` / `/api/prev` | next / previous page of the rotation |
+| POST | `/api/push[?min=N][&ov=…]` | multipart DXF1 frame shown now, for N minutes (0 = until the next page change); `tools/push.py` makes one from a picture or a text |
+| POST | `/api/push/clear` | back to the rotation |
+| POST | `/api/counter?add=±N` or `?set=N` | the shiny counter (→ `{counter}`); the page on screen redraws if it shows it |
 | POST | `/api/show?slot=N` | show rotation entry N now (the Pokémon of the day is the last one) |
 | GET/POST | `/api/state` | card data JSON (≤64 KB) |
 | POST | `/api/ota[?md5=…]` | multipart firmware `.bin` (app image) for this panel; optional MD5 checked after writing; restarts when done |
@@ -358,12 +390,16 @@ and renders for it.
 |---|---|---|---|
 | `bw` | 4.2" 400×300 `GDEY042T81` | black, white | fast partial refresh: the day counter updates without a flash |
 | `bwr` | 4.2" 400×300 `GDEY042Z98` | black, white, red | full refresh only (~16 s) |
-| `bwry` | 4.2" 400×300 `GDEY0420F51` | black, white, red, yellow | **experimental**: builds, not tested on hardware; yellow is not used by the pages yet |
+| `bwry` | 4.2" 400×300 `GDEY0420F51` | black, white, red, yellow | **experimental**: builds, not tested on hardware |
+| `spectra73` | 7.3" 800×480 `GDEP073E01` (Spectra 6) | black, white, red, yellow, blue, green | **experimental**: builds, not tested on hardware; full refresh only (~15 s); the 400×300 pages are scaled ×1.6 to fit (see below) |
 
 Adding a panel that [GxEPD2](https://github.com/ZinggJM/GxEPD2) supports is a block in `include/panel.h`
 (driver class, inks, partial refresh), an env in `platformio.ini` and an entry in the CI matrix
-(`.github/workflows/build.yml`). The page layouts are still drawn for 400×300: other sizes need the layout
-work listed in the roadmap.
+(`.github/workflows/build.yml`). The page layouts are drawn for 400×300. A bigger panel gets them scaled up
+to fit and centred (nearest neighbour, so ×1.6 on 800×480 makes some pixels one wider than others); the
+number boxes move and grow with the page and the web UI draws them exactly as the board will. Panels smaller
+than 400×300 are refused: they need layouts of their own. The board draws big panels a band at a time
+(`PANEL_PAGES`), so the frame never has to fit in RAM.
 
 ## Frame format
 
@@ -420,8 +456,11 @@ All run in CI on every push, next to the firmware builds.
 - [x] Web installer (flash from the browser)
 - [x] Page frames (built-in and your own 9-slice image), more header styles
 - [x] Energy & updates section, settings saved without sending pages, Pokémon of the day schedule
-- [ ] 6-colour panels (firmware build; the web UI can already preview them)
-- [ ] Layouts that adapt to other panel sizes (2.9", 7.3")
+- [x] 2.0: bigger app partition, verified OTA, rotation pools, random order, staged send, show a page now
+- [x] Who's that Pokémon?, shiny counter on the board's button, Pokédex progress, item of the day
+- [x] Split screen, your images, pages pushed from scripts and Home Assistant
+- [x] 7.3" 6-colour panel (firmware build, pages scaled to fit)
+- [ ] Layouts drawn for other sizes (2.9" and smaller, and native 800×480 instead of scaling)
 
 ## License
 

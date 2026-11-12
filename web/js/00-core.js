@@ -15,7 +15,8 @@ const PANELS = {
   bw: {palette: ['white', 'black']},
   bwr: {palette: ['white', 'black', 'red']},
   bwry: {palette: ['white', 'black', 'red', 'yellow']},
-  color6: {palette: ['white', 'black', 'red', 'yellow', 'blue', 'green'], previewOnly: true}};   // no firmware build yet
+  spectra73: {palette: ['white', 'black', 'red', 'yellow', 'blue', 'green']},           // 7.3" 800x480: pages scaled to fit
+  color6: {palette: ['white', 'black', 'red', 'yellow', 'blue', 'green'], previewOnly: true}};
 const panelOf = s => PANELS[s.panel] || PANELS.bw;
 const hasInk = (s, name) => panelOf(s).palette.includes(name);
 const isColour = s => panelOf(s).palette.length > 3;      // yellow and beyond: coloured sprites and type colours

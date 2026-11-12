@@ -42,7 +42,7 @@ function crc32(bytes) {
   return ~c >>> 0;
 }
 const minutesOf = hhmm => { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : -1; };
-const overlayArg = o => o ? [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep, o.mode || 0, o.scale || 1].join(',') : '';
+const overlayArg = list => (list || []).map(o => [o.x, o.y, o.w, o.h, o.align, o.start, o.color, o.sep, o.mode || 0, o.scale || 1].join(',')).join(';');
 
 // Pages go to slots in rotation order (each entry's pool in a row), then the rotation.
 // With firmware 2.0 they are uploaded to a staging copy and switched over by the last
@@ -51,7 +51,9 @@ async function sendAll() {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
   const plan = rotationPlan();
   if (!plan.length) { setStatus(t('st_no_pages')); return; }
-  if ((deviceInfo.w ?? W) !== W || (deviceInfo.h ?? H) !== H) { setStatus(t('st_size', {w: W, h: H, pw: deviceInfo.w, ph: deviceInfo.h})); return; }
+  const pw = deviceInfo.w ?? W, ph = deviceInfo.h ?? H;
+  // smaller panels need their own layouts; bigger ones get the pages scaled up (46-fit.js)
+  if (pw < W || ph < H || ((pw !== W || ph !== H) && !(deviceInfo.api >= 2))) { setStatus(t('st_size', {w: W, h: H, pw, ph})); return; }
   const dxf = deviceInfo.api >= 2;     // older firmware: raw two-plane pages, fixed size
   const feat = String(deviceInfo.features || '').split(',');
   const pools = feat.includes('pools');
@@ -69,9 +71,13 @@ async function sendAll() {
     await Promise.all(Array.from({length: Math.min(4, jobs.length)}, async () => {
       while (next < jobs.length) {
         const i = next++, j = jobs[i];
-        const ink = await renderPage(j.key, j.s, j.idx, dots, j.part);
-        const data = dxf ? encodeFrame(ink, W, H, bpp) : pack(ink);
-        frames[i] = {data, ov: overlayArg(ink.overlay), crc: crc32(data)};
+        let ink = await renderPage(j.key, j.s, j.idx, dots, j.part);
+        if (pw !== W || ph !== H) ink = fitInk(ink, pw, ph, deviceInfo.counter || 0);
+        const data = dxf ? encodeFrame(ink, pw, ph, bpp) : pack(ink);
+        // only the number boxes this firmware can redraw: modes/scale from 1.6, the counter from 2.0, several from 2.0
+        ink.overlays = ink.overlays.filter(o => (feat.includes('countdown') || (!o.mode && (o.scale || 1) === 1)) && (feat.includes('counter') || (o.mode || 0) < 2));
+        if (!feat.includes('overlays')) ink.overlays.length = Math.min(1, ink.overlays.length);
+        frames[i] = {data, ov: overlayArg(ink.overlays), crc: crc32(data)};
         setStatus(t('st_rendering', {i: ++done, n: jobs.length}));
       }
     }));
@@ -132,10 +138,10 @@ async function sendAll() {
 
 // Puts one page of the rotation on the e-paper now (POST /api/show?slot=<rotation entry>).
 // Only when the board holds the rotation listed here: otherwise the numbers differ.
-async function showOnDevice(key, part = 0, sub = 0) {
+async function showOnDevice(key, part = 0) {
   if (!deviceInfo) { setStatus(t('st_no_device')); return; }
   if (!boardMatches()) { setStatus(t('st_show_stale')); return; }
-  const idx = key == null ? -1 : rotationIndex(key, part, sub);
+  const idx = key == null ? -1 : rotationIndex(key, part);
   if (idx < 0) { setStatus(t('st_show_none')); return; }
   const r = await fetch(api('/api/show?slot=' + idx), {method: 'POST'}).catch(() => null);
   const label = t('pg_' + key) + (pageParts(key) > 1 ? ' ' + (part + 1) : '');
@@ -206,6 +212,7 @@ function setConnected() {
   const bat = i.batteryMv > 1000 ? ' · ' + t('st_bat', {v: (i.batteryMv / 1000).toFixed(2)}) : '';
   renderSystemBox();
   renderPowerBox();
+  renderShinyBox();
   setStatus(t('st_connected', {w: i.w, h: i.h, mode: panelLabel(state.panel), c: i.current + 1, n: i.entries ?? i.count}) + bat);
 }
 
@@ -220,6 +227,8 @@ function migrate(st) {
   if (!Array.isArray(st.collection)) st.collection = [];
   st.collection = st.collection.filter(c => c && c.data).map(c => ({id: c.id || Math.random().toString(36).slice(2), data: c.data}));
   if (!st.dailySeed) st.dailySeed = (Date.now() % 2147483647) || 1;
+  if (!st.wtpSeed) st.wtpSeed = (st.dailySeed * 7 + 13) % 2147483647 || 1;
+  if (!st.itemSeed) st.itemSeed = (st.dailySeed * 11 + 29) % 2147483647 || 1;
   if (!PAGE_STYLES.includes(st.pageStyle)) st.pageStyle = 'classic';
   if (!FRAME_KEYS.includes(st.frame) || (st.frame === 'custom' && !st.frameImg)) st.frame = 'none';
   if (!st.pageFrame || typeof st.pageFrame !== 'object') st.pageFrame = {};
@@ -228,7 +237,7 @@ function migrate(st) {
 
 // Form sections as separate pages. The current one is kept in the URL hash, so a
 // reload or a bookmark (…/#ribbons) opens the same section.
-const SECTION_PAGE = {pokemon: 'cover', moves: 'moves', stats: 'stats', story: 'story', ribbons: 'ribbons', trainer: 'team', hof: 'hof'};
+const SECTION_PAGE = {pokemon: 'cover', moves: 'moves', stats: 'stats', story: 'story', ribbons: 'ribbons', trainer: 'team', hof: 'hof', shiny: 'shiny', split: 'split', gallery: 'images'};
 let section = GROUPS.some(([g]) => g === location.hash.slice(1)) ? location.hash.slice(1) : 'pokemon';
 
 function buildSections() {
@@ -283,6 +292,8 @@ async function applyUiLang() {
   buildStyleBox();
   buildFrameBox();
   buildPowerBox();
+  buildShinyBox();
+  buildGalleryBox();
   buildSystemBox();
   buildSections();
 }

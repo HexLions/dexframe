@@ -41,8 +41,8 @@ function buildForm() {
         try { localStorage.setItem('dexframe', JSON.stringify(state)); } catch {}
       });
       el.addEventListener('input', () => {
-        state[key] = type === 'checkbox' ? el.checked : type === 'number' || ['teamPer', 'btnDouble', 'btnLong'].includes(key) ? Number(el.value) : el.value;
-        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'dailyAt', 'dailyEvery', 'dailyShuffle', 'style', 'teamPer', 'team', 'hofTeam'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
+        state[key] = type === 'checkbox' ? el.checked : type === 'number' || ['teamPer', 'btnDouble', 'btnLong', 'shOdds'].includes(key) ? Number(el.value) : el.value;
+        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'dailyAt', 'dailyEvery', 'dailyShuffle', 'style', 'teamPer', 'team', 'hofTeam', 'wtpCount', 'itemCount', 'itemKind'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
         if (key === 'dispLang' || key === 'ribbons') renderPicker();   // names follow the display language
         if (key === 'trBase' || key === 'trFile') renderTrainerPicker();
         if (key === 'team' || key === 'dex' || key === 'style' || key === 'shiny' || key === 'dispLang') renderMonPickers();

@@ -20,7 +20,7 @@ const fmtNum = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, numSep());
 // the counter every day without the browser. Layout in src/main.cpp (loadGlyphs).
 const GLYPH_H = 16;   // Silkscreen 16px digits and separators sit in rows 3..14 of the text box
 function buildGlyphs() {
-  const chars = [...'0123456789', numSep()];
+  const chars = [...'0123456789', numSep(), '%'];   // 10 = thousands separator, 11 = per cent
   const c = document.createElement('canvas'), x = c.getContext('2d', {willReadFrequently: true});
   x.font = FONT(16, false);
   const adv = chars.map(ch => Math.round(x.measureText(ch).width));

@@ -14,6 +14,7 @@ No network needed: requests to other hosts are blocked, every image is a made-up
 import asyncio
 import datetime
 import json
+import math
 import os
 import re
 import struct
@@ -33,11 +34,12 @@ PANELS = [  # id, palette, firmware: '2.0' (pools, staged send), '1.7', None = 1
     ('bw', ['white', 'black'], '2.0'),
     ('bwr', ['white', 'black', 'red'], '2.0'),
     ('bwry', ['white', 'black', 'red', 'yellow'], '2.0'),
+    ('spectra73', ['white', 'black', 'red', 'yellow', 'blue', 'green'], '2.0'),
     ('bwr', ['white', 'black', 'red'], '1.7'),
     ('bwr', ['white', 'black', 'red'], None),
 ]
 FEATURES = {'1.7': 'pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh',
-            '2.0': 'pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh,pools,stage,prev'}
+            '2.0': 'pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh,pools,stage,prev,counter,overlays'}
 
 
 def fake_sprite(size=64):
@@ -70,23 +72,38 @@ def file_part(req):
     return part.split(b'\r\n\r\n', 1)[1].rsplit(b'\r\n', 1)[0]
 
 
-def paint_overlay(px, ov, g, today):
+def paint_overlays(px, ovs, g, today, counter, pw=W):
+    """All the boxes of a slot (';'-separated), as the board draws them."""
+    for ov in ovs.split(';'):
+        px = paint_overlay(px, ov, g, today, counter, pw)
+    return px
+
+
+def paint_overlay(px, ov, g, today, counter=0, pw=W):
     """Mirror of layoutOverlay() + paintOverlay() in src/main.cpp."""
     v = list(map(int, ov.split(',')))
     x0, y0, w, h, align, start, color, sep = v[:8]
     mode, sc = (v[8] if len(v) > 8 else 0), (min(4, max(1, v[9])) if len(v) > 9 else 1)
     gw, gh, n = g[0], g[1], g[2]
     adv, bits, stride = g[3:3 + n], g[3 + n:], (g[0] + 7) // 8
-    digits, idx = str(max(0, start - today if mode == 1 else today - start)), []
+    if mode == 2:
+        value = counter
+    elif mode == 3:
+        value = math.floor(100 * (1 - (1 - 1 / start) ** counter))
+    else:
+        value = start - today if mode == 1 else today - start
+    digits, idx = str(max(0, value)), []
     for i, c in enumerate(digits):
         if sep and n > 10 and i > 0 and (len(digits) - i) % 3 == 0:
             idx.append(10)
         idx.append(int(c))
+    if mode == 3 and n > 11:
+        idx.append(11)
     total = sum(adv[i] * sc for i in idx)
     x = x0 + w - total if align == 2 else x0 + (w - total) // 2 if align == 1 else x0
     out = bytearray(px)
     for yy in range(y0, y0 + h):
-        out[yy * W + x0:yy * W + x0 + w] = bytes(w)
+        out[yy * pw + x0:yy * pw + x0 + w] = bytes(w)
     for k in idx:
         glyph = bits[k * gh * stride:(k + 1) * gh * stride]
         for gy in range(gh):
@@ -98,7 +115,7 @@ def paint_overlay(px, ov, g, today):
                             continue
                         for dy in range(sc):
                             if gy * sc + dy < h:
-                                out[(y0 + gy * sc + dy) * W + p] = color + 1
+                                out[(y0 + gy * sc + dy) * pw + p] = color + 1
         x += adv[k] * sc
     return bytes(out)
 
@@ -107,11 +124,12 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
     fw = api
     api = 2 if fw else None
     dev = {'frames': {}, 'staged': {}, 'glyphs': None, 'rotation': None}
-    info = {'w': W, 'h': H, 'red': 'red' in palette, 'maxSlots': 48, 'slotsFit': 28, 'count': 1, 'daily': 0,
+    pw, ph = (800, 480) if pid == 'spectra73' else (W, H)
+    info = {'w': pw, 'h': ph, 'red': 'red' in palette, 'maxSlots': 48, 'slotsFit': 28, 'count': 1, 'daily': 0,
             'entries': 1, 'current': 0, 'interval': 10, 'batteryMv': 3912, 'busy': False}
     if api:
         info.update(api=api, panel=pid, palette=palette, bpp=2 if len(palette) > 2 else 1, pageBudget=1_000_000,
-                    features=FEATURES[fw], freeBytes=600_000, pending=False)
+                    features=FEATURES[fw], freeBytes=600_000, pending=False, counter=777)
     uploads = []
 
     async def device(route):
@@ -169,13 +187,19 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
     await page.wait_for_function("typeof deviceInfo !== 'undefined' && deviceInfo", timeout=15000)
     # pages added in 1.6 that need no network: countdown (big digits redrawn by the board),
     # IV/EV chart, team split in two pages; plus the settings that travel with the rotation
-    await page.evaluate("""Object.assign(state, {pg_countdown: true, cdDate: '25/12/2031', cdTitle: 'Test', pg_radar: true, teamPer: 3,
+    await page.evaluate("""(FW2) => { Object.assign(state, {pg_countdown: true, cdDate: '25/12/2031', cdTitle: 'Test', pg_radar: true, teamPer: 3,
+        pg_shiny: true, shOdds: 1365, shCount: 777, pg_dexprog: true, dexCaught: '1-100', pg_whosthat: FW2, wtpCount: 3,
+        pg_split: true, splitLayout: 'q4', splitW0: 'sprite', splitW1: 'days', splitW2: 'countdown', splitW3: 'shiny',
         quietOn: true, quietFrom: '23:00', quietTo: '07:00', flip: true, btnDouble: 2, btnLong: 3, pageMin: {cover: 30},
         frame: 'double', pageFrame: {radar: 'wave', cover: 'studs'}, pageStyle: 'tab', dailyAt: '06:30', dailyEvery: 2, dailyShuffle: true});
-        buildTabs()""")
-    sent = "document.querySelector('#status').textContent.match(/Sent|failed|Too|take|draws/)"
+        buildTabs(); }""", fw == '2.0')
+    sent = "document.querySelector('#status').textContent.match(/Sent|failed|Too|take|draws|need firmware/)"
     await page.click('#send')
-    await page.wait_for_function(sent, timeout=120000)
+    try:
+        await page.wait_for_function(sent, timeout=180000)
+    except Exception:
+        print('      stuck at:', await page.inner_text('#status'), errors[:3])
+        raise
     status = await page.inner_text('#status')
     first = len(uploads)
     resent = None
@@ -221,7 +245,7 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
             f = tmp / 'frame.bin'
             f.write_bytes(frame)
             r = subprocess.run([str(decoder), str(f)], capture_output=True)
-            if r.returncode or len(r.stdout) != W * H:
+            if r.returncode or len(r.stdout) != pw * ph:
                 problems.append(f'slot {slot}: firmware decoder rejects the frame')
                 continue
             px = r.stdout
@@ -235,8 +259,11 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
             problems.append(f'slot {slot}: inks {sorted(set(px) - allowed)} not on this panel')
         if ov:
             counters += 1
-            if paint_overlay(px, ov, dev['glyphs'], today) != px:
-                problems.append(f'slot {slot}: counter drawn by the board differs from the page')
+            redrawn = paint_overlays(px, ov, dev['glyphs'], today, info.get('counter', 0), pw)
+            if redrawn != px:
+                diff = [i for i in range(len(px)) if redrawn[i] != px[i]]
+                problems.append(f'slot {slot}: counter drawn by the board differs from the page '
+                                f'({len(diff)} px, first at {diff[0] % pw},{diff[0] // pw}; ov {ov})')
     print(f"{'FAIL' if problems else 'ok  '} {label:22} {len(sizes)} pages, {counters} with counter, "
           f"{sum(sizes) // 1024} KB total, largest {max(sizes, default=0)} B")
     for p in problems:
@@ -253,7 +280,7 @@ async def main():
             exe = os.environ.get('CHROME')
             browser = await p.chromium.launch(args=['--no-sandbox', '--allow-file-access-from-files'], **({'executable_path': exe} if exe else {}))
             ok = True
-            for pid, palette, api in PANELS:
+            for pid, palette, api in PANELS[int(os.environ.get('FIRST', 0)):int(os.environ.get('PANELS', len(PANELS)))]:
                 ok &= await run_panel(browser, decoder, tmp, pid, palette, api)
             await browser.close()
     sys.exit(0 if ok else 1)

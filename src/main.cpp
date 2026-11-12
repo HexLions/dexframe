@@ -75,6 +75,7 @@ Preferences prefs;
 // ---- configuration (NVS) ----
 rot::Rotation rotCfg;         // entries and the pool of pages behind each (include/rotation.h)
 bool orderShuffle = false;    // rotation order: a new random order every round
+long shinyCount = 0;          // the board's counter (shiny hunt page), kept in NVS
 uint32_t quietIntervalMin = 0;   // page change during the quiet hours (0 = none)
 uint32_t intervalMin = 10;    // 0 = manual only (button / API)
 bool sleepEnabled = false;
@@ -96,6 +97,11 @@ RTC_DATA_ATTR int rtcEntry = 0;        // rotation entry on screen
 RTC_DATA_ATTR int rtcPos = 0;          // its position in the current round
 RTC_DATA_ATTR uint32_t rtcCycle = 0;   // rounds of the rotation so far (shuffle seed)
 RTC_DATA_ATTR uint16_t rtcViews[rot::MAX_ENTRIES];   // 'v' pools: times each entry came up
+// A page pushed from outside (/api/push: a script, Home Assistant, a dashboard) is kept
+// in slot PUSH_SLOT and shown instead of the rotation until it expires or the page changes.
+constexpr int PUSH_SLOT = MAX_SLOTS;
+RTC_DATA_ATTR bool rtcPush = false;
+RTC_DATA_ATTR time_t rtcPushUntil = 0;        // epoch; 0 = until the next page change
 RTC_DATA_ATTR int32_t rtcDrawnDay = -1;
 RTC_DATA_ATTR int32_t rtcDrawnDaily = -1;   // dailyIndex() when the daily page was drawn
 RTC_DATA_ATTR int rtcPartials = 0;
@@ -175,14 +181,12 @@ int poolPick(int entry) {
   return dailyPickOf(dailyIndex(), p.size, dailyShuffle);
 }
 
-// Rotation entry -> file slot.
-int entrySlot(int entry) { return rotCfg.base(entry) + poolPick(entry); }
+// Rotation entry -> file slot (the pushed page while one is shown).
+int entrySlot(int entry) { return rtcPush ? PUSH_SLOT : rotCfg.base(entry) + poolPick(entry); }
+void endPush() { rtcPush = false; rtcPushUntil = 0; }
 
-Overlay readOverlay(int slot) {
+Overlay parseOverlay(const String& s) {
   Overlay o{};
-  File f = LittleFS.open(slotPath(slot, ".ov"), "r");
-  if (!f) return o;
-  String s = f.readString(); f.close();
   long v[10]; int n = 0, from = 0;
   while (n < 10) {
     int c = s.indexOf(',', from);
@@ -192,10 +196,34 @@ Overlay readOverlay(int slot) {
   }
   if (n < 7) return o;
   o = {(int)v[0], (int)v[1], (int)v[2], (int)v[3], (int)v[4], (int32_t)v[5], (int)v[6], n > 7 ? (int)v[7] : 0, true};
-  o.mode = n > 8 ? (int)v[8] : 0;
+  o.mode = n > 8 ? constrain((int)v[8], 0, 3) : 0;
   o.scale = n > 9 ? constrain((int)v[9], 1, 4) : 1;
   o.ok = o.w > 0 && o.h > 0 && o.x >= 0 && o.y >= 0 && o.x + o.w <= W && o.y + o.h <= H;
   return o;
+}
+
+// All number boxes of a slot; returns how many are valid.
+int readOverlays(int slot, Overlay* out) {
+  File f = LittleFS.open(slotPath(slot, ".ov"), "r");
+  if (!f) return 0;
+  String s = f.readString(); f.close();
+  int n = 0, from = 0;
+  while (n < MAX_OVERLAYS && from <= (int)s.length()) {
+    int c = s.indexOf(';', from);
+    Overlay o = parseOverlay(s.substring(from, c < 0 ? s.length() : c));
+    if (o.ok) out[n++] = o;
+    if (c < 0) break;
+    from = c + 1;
+  }
+  return n;
+}
+
+// Does the page in this slot show something that changes with the date / the counter?
+bool slotHasOverlay(int slot, bool date) {
+  Overlay o[MAX_OVERLAYS];
+  int n = readOverlays(slot, o);
+  for (int i = 0; i < n; i++) if ((o[i].mode <= 1) == date) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------- glyphs
@@ -220,17 +248,26 @@ void loadGlyphs() {
 // Layout of the day count inside the overlay box (false = nothing to draw).
 bool layoutOverlay(const Overlay& o, OverlayRun& r) {
   int32_t today = todayLocal();
-  if (!o.ok || today < 0 || !glyphs.bits || glyphs.n < 10) return false;
-  long days = o.mode == 1 ? (long)o.start - today : (long)today - o.start;
-  if (days < 0) days = 0;
+  if (!o.ok || !glyphs.bits || glyphs.n < 10) return false;
+  long value;
+  if (o.mode == 2) value = shinyCount;
+  else if (o.mode == 3) {
+    if (o.start < 2) return false;
+    value = (long)floor(100.0 * (1.0 - pow(1.0 - 1.0 / o.start, (double)shinyCount)));
+  } else {
+    if (today < 0) return false;
+    value = o.mode == 1 ? (long)o.start - today : (long)today - o.start;
+  }
+  if (value < 0) value = 0;
   char digits[16];
-  snprintf(digits, sizeof digits, "%ld", days);
+  snprintf(digits, sizeof digits, "%ld", value);
   int len = strlen(digits);
   r.k = 0;
   for (int i = 0; i < len; i++) {
     if (o.sep && glyphs.n > 10 && i > 0 && (len - i) % 3 == 0) r.idx[r.k++] = 10;
     r.idx[r.k++] = digits[i] - '0';
   }
+  if (o.mode == 3 && glyphs.n > 11) r.idx[r.k++] = 11;      // "%"
   int total = 0;
   for (int i = 0; i < r.k; i++) total += glyphs.adv[r.idx[i]] * o.scale;
   r.x = o.align == 2 ? o.x + o.w - total : o.align == 1 ? o.x + (o.w - total) / 2 : o.x;
@@ -333,9 +370,19 @@ bool drawEntry(int entry, bool full) {
     if (!planes || f.read(planes, LEGACY_FRAME) != LEGACY_FRAME) { free(planes); f.close(); return false; }
   }
 
-  Overlay ov = readOverlay(slot);
-  OverlayRun run;
-  bool hasOv = layoutOverlay(ov, run);
+  Overlay ov[MAX_OVERLAYS];
+  OverlayRun run[MAX_OVERLAYS];
+  bool lay[MAX_OVERLAYS];
+  int nOv = readOverlays(slot, ov);
+  bool hasOv = false;
+  int bx0 = W, by0 = H, bx1 = 0, by1 = 0;            // union of the boxes: the partial window
+  for (int i = 0; i < nOv; i++) {
+    lay[i] = layoutOverlay(ov[i], run[i]);
+    if (!lay[i]) continue;
+    hasOv = true;
+    bx0 = min(bx0, ov[i].x); by0 = min(by0, ov[i].y);
+    bx1 = max(bx1, ov[i].x + ov[i].w); by1 = max(by1, ov[i].y + ov[i].h);
+  }
   int mv = batteryMv();
   bool lowBat = mv >= 1000 && mv <= batLowMv;   // <1 V = no battery connected
 
@@ -343,7 +390,7 @@ bool drawEntry(int entry, bool full) {
   busy = true;
   display.setRotation(flipScreen ? 2 : 0);
   if (partial) {
-    display.setPartialWindow(ov.x & ~7, ov.y, ((ov.x + ov.w + 7) & ~7) - (ov.x & ~7), ov.h);
+    display.setPartialWindow(bx0 & ~7, by0, ((bx1 + 7) & ~7) - (bx0 & ~7), by1 - by0);
     rtcPartials++;
   } else {
     display.setFullWindow();
@@ -358,7 +405,7 @@ bool drawEntry(int entry, bool full) {
     } else {
       paintFrame(f, h.bpp);
     }
-    if (hasOv) paintOverlay(ov, run);
+    for (int i = 0; i < nOv; i++) if (lay[i]) paintOverlay(ov[i], run[i]);
     if (lowBat) paintLowBattery();
   } while (display.nextPage());
   // hibernate loses the controller RAM (next update is a full refresh); powerOff keeps it,
@@ -373,6 +420,7 @@ bool drawEntry(int entry, bool full) {
 }
 
 void showEntry(int entry) {
+  endPush();
   int n = max(1, entryCount());
   current = ((entry % n) + n) % n;
   rtcEntry = current;
@@ -443,11 +491,22 @@ time_t quietEnd(time_t t) {
   return t + (time_t)((quietTo - m + 1440) % 1440) * 60 - lt.tm_sec;
 }
 
-// Button actions: 1 next page, 2 previous page, 3 full refresh of the current one.
+// Counter of the shiny hunt page. Shown at once (partial refresh on B/W) when the page
+// on screen draws it; NVS writes are cheap enough for one press at a time.
+void setCounter(long v) {
+  shinyCount = constrain(v, 0L, 9999999L);
+  prefs.putLong("shiny", shinyCount);
+  if (slotHasOverlay(entrySlot(current), false) && !pendingDraw) { pendingDraw = true; pendingFull = false; }
+}
+
+// Button actions: 1 next page, 2 previous page, 3 full refresh of the current one,
+// 4 counter +1, 5 counter -1.
 void buttonAction(uint8_t a) {
   if (a == 1) nextEntry(1);
   else if (a == 2) nextEntry(-1);
   else if (a == 3) { pendingDraw = true; pendingFull = true; rtcPartials = 0; }
+  else if (a == 4) setCounter(shinyCount + 1);
+  else if (a == 5) setCounter(shinyCount - 1);
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -482,6 +541,7 @@ void handleUpload() {
       uploadPath = "";
       if (!keyOk()) break;
       if (server.uri() == "/api/glyphs") uploadPath = "/glyphs";
+      else if (server.uri() == "/api/push") uploadPath = slotPath(PUSH_SLOT, "");
       else {
         int slot = server.hasArg("slot") ? server.arg("slot").toInt() : -1;
         if (slot < 0 || slot >= MAX_SLOTS) break;
@@ -540,6 +600,27 @@ void handleFrameDone() {
   server.send(204);
 }
 
+// POST /api/push[?min=N][&ov=…]  (multipart DXF1 frame): shown now, for N minutes
+// (0 or missing: until the next page change); then the rotation goes on.
+void handlePushDone() {
+  if (!authorized()) return;
+  if (!uploadOk) { LittleFS.remove(slotPath(PUSH_SLOT, ".tmp")); server.send(400, "text/plain", "bad frame"); return; }
+  LittleFS.remove(slotPath(PUSH_SLOT, ".bin"));
+  LittleFS.rename(slotPath(PUSH_SLOT, ".tmp"), slotPath(PUSH_SLOT, ".bin"));
+  const String ov = server.arg("ov");
+  bool ok = ov.length() < 200;
+  for (size_t i = 0; ok && i < ov.length(); i++) ok = isdigit((unsigned char)ov[i]) || ov[i] == ',' || ov[i] == '-' || ov[i] == ';';
+  LittleFS.remove(slotPath(PUSH_SLOT, ".ov"));
+  if (ok && ov.length()) { File o = LittleFS.open(slotPath(PUSH_SLOT, ".ov"), "w"); if (o) { o.print(ov); o.close(); } }
+  long mins = constrain(server.arg("min").toInt(), 0L, 7 * 24 * 60L);
+  rtcPush = true;
+  rtcPushUntil = mins && timeValid() ? time(nullptr) + mins * 60 : 0;
+  rtcPageDueAt = 0;
+  lastSwitch = millis();
+  pendingDraw = true; pendingFull = true;
+  server.send(202);
+}
+
 // POST /api/glyphs  (multipart file)
 void handleGlyphsDone() {
   if (!authorized()) return;
@@ -579,8 +660,8 @@ void applySettings() {
     if (ok) { pageIntervals = iv; prefs.putString("ivs", pageIntervals); }
   }
   if (server.hasArg("flip")) { flipScreen = server.arg("flip") == "1"; prefs.putBool("flip", flipScreen); }
-  if (server.hasArg("dbl")) { actDouble = constrain(server.arg("dbl").toInt(), 0, 3); prefs.putUChar("dbl", actDouble); }
-  if (server.hasArg("lng")) { actLong = constrain(server.arg("lng").toInt(), 0, 3); prefs.putUChar("lng", actLong); }
+  if (server.hasArg("dbl")) { actDouble = constrain(server.arg("dbl").toInt(), 0, 5); prefs.putUChar("dbl", actDouble); }
+  if (server.hasArg("lng")) { actLong = constrain(server.arg("lng").toInt(), 0, 5); prefs.putUChar("lng", actLong); }
   if (server.hasArg("batlow")) { batLowMv = constrain(server.arg("batlow").toInt(), 3000, 4200); prefs.putInt("batlow", batLowMv); }
   if (server.hasArg("fullevery")) { fullEvery = constrain(server.arg("fullevery").toInt(), 1, 100); prefs.putInt("fullevery", fullEvery); }
   if (server.hasArg("dat")) { dailyAt = constrain(server.arg("dat").toInt(), 0, 1439); prefs.putInt("dat", dailyAt); }
@@ -731,13 +812,16 @@ void handleInfo() {
   String j = "{\"w\":" + String(W) + ",\"h\":" + String(H) +
              ",\"red\":" + (panelHasInk(2) ? "true" : "false") +
              ",\"api\":" + String(API_LEVEL) +
-             ",\"features\":\"pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh,pools,stage,prev\"" +
+             ",\"features\":\"pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh,pools,stage,prev,counter,overlays,push\"" +
              ",\"dailyAt\":" + String(dailyAt) + ",\"dailyEvery\":" + String(dailyEvery) +
              ",\"dailyShuffle\":" + (dailyShuffle ? "true" : "false") +
              ",\"dailyIndex\":" + String(dailyIndex()) +
              ",\"pools\":\"" + poolsString() + "\"" +
              ",\"order\":\"" + (orderShuffle ? "shuffle" : "seq") + "\"" +
              ",\"quietInterval\":" + String(quietIntervalMin) +
+             ",\"counter\":" + String(shinyCount) +
+             ",\"push\":" + (rtcPush ? "true" : "false") +
+             ",\"pushUntil\":" + String((long)rtcPushUntil) +
              ",\"pending\":" + (pendingDraw || busy ? "true" : "false") +
              ",\"freeBytes\":" + String((long)LittleFS.totalBytes() - (long)LittleFS.usedBytes()) +
              ",\"sleepOn\":" + (sleepEnabled ? "true" : "false") +
@@ -1146,6 +1230,20 @@ void startServer() {
     rtcPartials = 0; pendingDraw = true; pendingFull = true; server.send(202);
   });
   server.on("/api/next", HTTP_POST, [] { touch(); if (authorized()) { nextEntry(1); server.send(202); } });
+  server.on("/api/push", HTTP_POST, handlePushDone, handleUpload);
+  server.on("/api/push/clear", HTTP_POST, [] {
+    touch();
+    if (!authorized()) return;
+    if (rtcPush) { endPush(); pendingDraw = true; pendingFull = true; }
+    server.send(202);
+  });
+  server.on("/api/counter", HTTP_POST, [] {      // ?add=±N or ?set=N
+    touch();
+    if (!authorized()) return;
+    if (server.hasArg("set")) setCounter(server.arg("set").toInt());
+    else if (server.hasArg("add")) setCounter(shinyCount + constrain(server.arg("add").toInt(), -1000L, 1000L));
+    server.send(200, "application/json", "{\"counter\":" + String(shinyCount) + "}");
+  });
   server.on("/api/prev", HTTP_POST, [] { touch(); if (authorized()) { nextEntry(-1); server.send(202); } });
   server.on("/api/show", HTTP_POST, [] {
     touch();
@@ -1211,6 +1309,10 @@ void startServer() {
 // page on screen carries a day counter (whichever comes first).
 uint64_t secondsToNextWake() {
   uint64_t s = 0;
+  if (rtcPush && rtcPushUntil) {                       // a pushed page with an end time: wake then
+    time_t now = time(nullptr);
+    return rtcPushUntil > now ? (uint64_t)(rtcPushUntil - now) + 5 : 1;
+  }
   uint32_t iv = entryInterval(current);
   if (iv > 0 && entryCount() > 1) {
     time_t now = time(nullptr);
@@ -1225,7 +1327,7 @@ uint64_t secondsToNextWake() {
     localtime_r(&now, &lt);
     long secOfDay = lt.tm_hour * 3600L + lt.tm_min * 60L + lt.tm_sec;
     auto until = [&](long at) -> uint64_t { long d = at - secOfDay; if (d <= 0) d += 24 * 3600L; return (uint64_t)d + 60; };
-    if (readOverlay(entrySlot(current)).ok) { uint64_t m = until(0); if (s == 0 || m < s) s = m; }
+    if (slotHasOverlay(entrySlot(current), true)) { uint64_t m = until(0); if (s == 0 || m < s) s = m; }
     if (isScheduled(current)) { uint64_t m = until(dailyAt * 60L); if (s == 0 || m < s) s = m; }
   }
   return s;   // 0 = no timer, button only
@@ -1263,8 +1365,9 @@ void loadConfig() {
   quietTo = constrain(prefs.getInt("qt", -1), -1, 1439);
   pageIntervals = prefs.getString("ivs", "");
   flipScreen = prefs.getBool("flip", false);
-  actDouble = min<uint8_t>(prefs.getUChar("dbl", 0), 3);
-  actLong = min<uint8_t>(prefs.getUChar("lng", 0), 3);
+  actDouble = min<uint8_t>(prefs.getUChar("dbl", 0), 5);
+  actLong = min<uint8_t>(prefs.getUChar("lng", 0), 5);
+  shinyCount = constrain(prefs.getLong("shiny", 0), 0L, 9999999L);
   batLowMv = constrain(prefs.getInt("batlow", BAT_LOW_MV), 3000, 4200);
   fullEvery = constrain(prefs.getInt("fullevery", FULL_EVERY), 1, 100);
   dailyAt = constrain(prefs.getInt("dat", 0), 0, 1439);
@@ -1307,15 +1410,19 @@ void setup() {
     // The RTC keeps system time across deep sleep: the interval elapsed -> next page,
     // otherwise this is the midnight wake that only updates the day counter.
     bool pageDue = entryInterval(current) > 0 && entryCount() > 1 && time(nullptr) + 30 >= rtcPageDueAt &&
-                   (!inQuiet(time(nullptr) + 30) || quietIntervalMin);
-    if (pageDue) {
+                   (!inQuiet(time(nullptr) + 30) || quietIntervalMin) && !(rtcPush && rtcPushUntil);
+    if (rtcPush && rtcPushUntil && time(nullptr) + 30 >= rtcPushUntil) {
+      endPush();                   // the pushed page is over: back to the rotation
+      drawEntry(current, true);
+    } else if (pageDue) {
+      endPush();
       current = stepEntry(1);
       rtcEntry = current;
       rtcPageDueAt = 0;
       drawEntry(current, true);
     } else if (isScheduled(current) && dailyIndex() != rtcDrawnDaily) {
       drawEntry(current, true);    // a new Pokémon of the day
-    } else if (todayLocal() != rtcDrawnDay && readOverlay(entrySlot(current)).ok) {
+    } else if (todayLocal() != rtcDrawnDay && slotHasOverlay(entrySlot(current), true)) {
       drawEntry(current, false);   // same page, refresh the day counter
     } else {
       rtcDrawnDay = todayLocal();  // nothing on screen changes
@@ -1324,6 +1431,7 @@ void setup() {
   }
 
   if (cause == ESP_SLEEP_WAKEUP_EXT0) {   // button: next page right away, then go online
+    endPush();
     current = stepEntry(1);
     rtcEntry = current;
     pendingDraw = true;
@@ -1385,8 +1493,9 @@ void loop() {
   }
   if (clickAt && millis() - clickAt >= 450) { clickAt = 0; buttonAction(1); }   // no second click came
 
+  if (rtcPush && rtcPushUntil && time(nullptr) >= rtcPushUntil) { endPush(); pendingDraw = true; pendingFull = true; }
   uint32_t iv = intervalAt(current, time(nullptr));
-  if (iv > 0 && entryCount() > 1 && millis() - lastSwitch >= iv * 60000UL) nextEntry(1);
+  if (iv > 0 && (entryCount() > 1 || rtcPush) && !(rtcPush && rtcPushUntil) && millis() - lastSwitch >= iv * 60000UL) nextEntry(1);
 
   // New day: refresh the counter on the page shown (partial on B/W).
   static uint32_t lastDayCheck = 0;
@@ -1397,7 +1506,7 @@ void loop() {
       if (isScheduled(current) && dailyIndex() != rtcDrawnDaily) {
         pendingDraw = true; pendingFull = true;          // a new Pokémon of the day
       } else if (today != rtcDrawnDay) {
-        if (readOverlay(entrySlot(current)).ok) { pendingDraw = true; pendingFull = false; }   // counter: partial on B/W
+        if (slotHasOverlay(entrySlot(current), true)) { pendingDraw = true; pendingFull = false; }   // counter: partial on B/W
         else rtcDrawnDay = today;                        // nothing on this page depends on the date
       }
     }

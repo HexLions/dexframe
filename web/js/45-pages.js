@@ -384,7 +384,8 @@ async function renderPage(key, s = state, idx, total, part = 0) {
   const ctx = work.getContext('2d', {willReadFrequently: true});
   const assets = page.prepare ? await page.prepare(s) : {blits: []};
   setFrameForChrome(frameThickness(s, key));
-  chrome(ctx, s, d(key), idx, total, ...(page.header ? page.header(s, assets) : []));
+  if (page.bare) { ctx.fillStyle = WHITE; ctx.fillRect(0, 0, W, H); }
+  else chrome(ctx, s, d(key), idx, total, ...(page.header ? page.header(s, assets) : []));
   page.draw(ctx, s, acc, assets);
   const ink = canvasToInk(ctx, panelOf(s).palette);
   const opt = {hasRed, dither: s.dither, contrast: Number(s.contrast) || 0,
@@ -397,7 +398,8 @@ async function renderPage(key, s = state, idx, total, part = 0) {
     if (sp) blitSprite(ink, sp, ...page.spriteArea, opt);
   }
   await applyFrame(ink, s, key);
-  ink.overlay = assets.overlay || null;
+  // number boxes the board redraws by itself (day counter, countdown, shiny counter…)
+  ink.overlays = [...(assets.overlay ? [assets.overlay] : []), ...(assets.overlays || [])].slice(0, 4);
   return ink;
 }
 
