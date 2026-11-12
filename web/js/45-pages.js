@@ -96,7 +96,7 @@ const PAGES = {
     header: (s, a) => [a?.name || '—', '-'],
     async prepare(s) {
       const ids = dailyIds(s);
-      const id = s._dailyId ?? ids[todayDay() % ids.length];
+      const id = s._dailyId ?? ids[dailyPickNow(ids.length)];
       const lang = state.dispLang;
       const [p, sp, img] = await Promise.all([pj(`pokemon/${id}`), pj(`pokemon-species/${id}`),
         getSprite(spriteUrl(s.style, id, false)).catch(() => null)]);
@@ -382,6 +382,7 @@ async function renderPage(key, s = state, idx, total, part = 0) {
   const work = document.createElement('canvas'); work.width = W; work.height = H;
   const ctx = work.getContext('2d', {willReadFrequently: true});
   const assets = page.prepare ? await page.prepare(s) : {blits: []};
+  setFrameForChrome(frameThickness(s, key));
   chrome(ctx, s, d(key), idx, total, ...(page.header ? page.header(s, assets) : []));
   page.draw(ctx, s, acc, assets);
   const ink = canvasToInk(ctx, panelOf(s).palette);
@@ -394,6 +395,7 @@ async function renderPage(key, s = state, idx, total, part = 0) {
     const sp = spritePixels(img);
     if (sp) blitSprite(ink, sp, ...page.spriteArea, opt);
   }
+  await applyFrame(ink, s, key);
   ink.overlay = assets.overlay || null;
   return ink;
 }

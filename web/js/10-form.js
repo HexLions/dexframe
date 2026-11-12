@@ -32,6 +32,8 @@ function buildForm() {
       if (key === 'panel' && deviceInfo) el.disabled = true;  // detected from firmware
       if (key === 'panel') [...el.options].forEach(o => { if (PANELS[o.value]?.previewOnly) o.remove(); });
       if (key === 'batLow') { el.step = '0.05'; el.min = '3'; el.max = '4.2'; }
+      if (key === 'dailyEvery') { el.min = '1'; el.max = '30'; }
+      if (key === 'frame') el.addEventListener('input', () => renderFrameBox());
       if (key === 'deviceUrl') el.addEventListener('change', async () => {
         try { localStorage.setItem('dexframe', JSON.stringify(state)); } catch {}   // detectDevice re-reads it
         await detectDevice(); migrate(state);
@@ -40,7 +42,7 @@ function buildForm() {
       });
       el.addEventListener('input', () => {
         state[key] = type === 'checkbox' ? el.checked : type === 'number' || ['teamPer', 'btnDouble', 'btnLong'].includes(key) ? Number(el.value) : el.value;
-        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'style', 'teamPer', 'team', 'hofTeam'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
+        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'dailyAt', 'dailyEvery', 'dailyShuffle', 'style', 'teamPer', 'team', 'hofTeam'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
         if (key === 'dispLang' || key === 'ribbons') renderPicker();   // names follow the display language
         if (key === 'trBase' || key === 'trFile') renderTrainerPicker();
         if (key === 'team' || key === 'dex' || key === 'style' || key === 'shiny' || key === 'dispLang') renderMonPickers();

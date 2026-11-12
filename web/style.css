@@ -77,3 +77,17 @@ details.adv .grid{margin-top:8px}
 .pgrow input[type=number]{width:72px;flex:none}
 .pgrow button{padding:4px 8px;flex:none}
 #pagesbox{margin-bottom:10px}
+.frgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:6px}
+.frtile{display:flex;flex-direction:column;align-items:center;gap:4px;padding:5px;font-size:11px;line-height:1.2}
+.frtile canvas{width:120px;height:76px;image-rendering:pixelated;border-radius:3px;border:1px solid var(--line)}
+.frtile[aria-pressed=true]{outline:2px solid var(--acc)}
+.btnlike{display:inline-block;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);font-size:13px;color:var(--fg)}
+.batline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.batgauge{width:64px;height:20px;border:2px solid var(--fg);border-radius:4px;padding:2px;position:relative}
+.batgauge::after{content:'';position:absolute;right:-6px;top:5px;width:3px;height:6px;background:var(--fg);border-radius:0 2px 2px 0}
+.batgauge i{display:block;height:100%;background:var(--acc);border-radius:1px;width:0}
+.batgauge i[data-low="1"]{background:#d33}
+#dlInfo{white-space:pre-line}
+.pgrow select{max-width:9.5em;min-width:0}
+.pgrow{flex-wrap:wrap}
+.pgrow label{flex:1 1 140px}

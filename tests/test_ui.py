@@ -155,7 +155,8 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
     # pages added in 1.6 that need no network: countdown (big digits redrawn by the board),
     # IV/EV chart, team split in two pages; plus the settings that travel with the rotation
     await page.evaluate("""Object.assign(state, {pg_countdown: true, cdDate: '25/12/2031', cdTitle: 'Test', pg_radar: true, teamPer: 3,
-        quietOn: true, quietFrom: '23:00', quietTo: '07:00', flip: true, btnDouble: 2, btnLong: 3, pageMin: {cover: 30}});
+        quietOn: true, quietFrom: '23:00', quietTo: '07:00', flip: true, btnDouble: 2, btnLong: 3, pageMin: {cover: 30},
+        frame: 'double', pageFrame: {radar: 'wave', cover: 'studs'}, pageStyle: 'tab', dailyAt: '06:30', dailyEvery: 2, dailyShuffle: true});
         buildTabs()""")
     sent = "document.querySelector('#status').textContent.match(/Sent|failed|Too|take|draws/)"
     await page.click('#send')
@@ -186,7 +187,7 @@ async def run_panel(browser, decoder, tmp, pid, palette, api):
     if resent:
         problems.append(f'second send uploaded {resent} pages again')
     rot = parse_qs(dev['rotation'] or '')
-    if api and [rot.get(k, [''])[0] for k in ('qf', 'qt', 'flip', 'dbl', 'lng')] != ['1380', '420', '1', '2', '3']:
+    if api and [rot.get(k, [''])[0] for k in ('qf', 'qt', 'flip', 'dbl', 'lng', 'dat', 'dev', 'dsh')] != ['1380', '420', '1', '2', '3', '390', '2', '1']:
         problems.append('settings not sent with the rotation: ' + str(dev['rotation']))
     if api and not rot.get('iv', [''])[0].startswith('30,'):
         problems.append('per-page minutes not sent: ' + str(rot.get('iv')))

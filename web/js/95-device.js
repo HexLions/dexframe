@@ -108,7 +108,8 @@ async function sendAll() {
       qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
       iv: [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(','),
       flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
-      batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10))});
+      batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10)),
+      ...dailySettings()});
     const r = await fetch(api('/api/rotation'), {method: 'POST', body});
     if (!r.ok) throw new Error(`${t('st_rotation')}: HTTP ${r.status}`);
     await saveState(true);
@@ -160,6 +161,7 @@ function setConnected() {
   const i = deviceInfo;
   const bat = i.batteryMv > 1000 ? ' · ' + t('st_bat', {v: (i.batteryMv / 1000).toFixed(2)}) : '';
   renderSystemBox();
+  renderPowerBox();
   setStatus(t('st_connected', {w: i.w, h: i.h, mode: panelLabel(state.panel), c: i.current + 1, n: i.entries ?? i.count}) + bat);
 }
 
@@ -174,6 +176,9 @@ function migrate(st) {
   if (!Array.isArray(st.collection)) st.collection = [];
   st.collection = st.collection.filter(c => c && c.data).map(c => ({id: c.id || Math.random().toString(36).slice(2), data: c.data}));
   if (!st.dailySeed) st.dailySeed = (Date.now() % 2147483647) || 1;
+  if (!PAGE_STYLES.includes(st.pageStyle)) st.pageStyle = 'classic';
+  if (!FRAME_KEYS.includes(st.frame) || (st.frame === 'custom' && !st.frameImg)) st.frame = 'none';
+  if (!st.pageFrame || typeof st.pageFrame !== 'object') st.pageFrame = {};
   return st;
 }
 
@@ -232,6 +237,8 @@ async function applyUiLang() {
   buildMonPickerBoxes();
   buildBadgeBox();
   buildStyleBox();
+  buildFrameBox();
+  buildPowerBox();
   buildSystemBox();
   buildSections();
 }

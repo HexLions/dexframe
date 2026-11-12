@@ -1,6 +1,6 @@
 // ---------- sprite style gallery ----------
 function buildStyleBox() {
-  const fs = document.querySelector('fieldset[data-group="display"]');
+  const fs = document.querySelector('fieldset[data-group="look"]');
   if (!fs || $('stbox')) return;
   const box = document.createElement('div'); box.className = 'picker'; box.id = 'stbox';
   box.innerHTML = `<h4 style="margin:0;font-size:13px" id="stT"></h4><div class="res" id="stRes" style="grid-template-columns:repeat(auto-fill,minmax(112px,1fr));max-height:none"></div>`;

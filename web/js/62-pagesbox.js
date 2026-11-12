@@ -39,7 +39,17 @@ function renderPagesBox() {
       };
       return b;
     };
-    row.append(lab, min, move('▲', -1), move('▼', 1));
+    const fr = document.createElement('select'); fr.title = t('pg_frame'); fr.setAttribute('aria-label', t('pg_frame'));
+    fr.add(new Option(t('fr_default'), ''));
+    for (const [v, txt] of frameOptions()) fr.add(new Option(txt, v));
+    fr.value = (state.pageFrame || {})[key] || '';
+    fr.oninput = () => {
+      state.pageFrame = {...(state.pageFrame || {})};
+      if (fr.value) state.pageFrame[key] = fr.value; else delete state.pageFrame[key];
+      if (previewPage !== key) { previewPage = key; previewPart = 0; previewCard = null; buildTabs(); }
+      scheduleRender(); saveState(true);
+    };
+    row.append(lab, min, fr, move('▲', -1), move('▼', 1));
     return row;
   });
   $('pgList').replaceChildren(...rows);

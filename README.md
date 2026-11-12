@@ -108,8 +108,10 @@ works even with an empty file system):
   the firmware gets the date via NTP (or from the browser clock in AP mode) and updates the number at midnight.
   Time zone: *Display → Time zone*, POSIX format (default `CET-1CEST,M3.5.0,M10.5.0/3`, Italy).
 - **Pokémon of the day**: a pool of 1–14 random Pokémon (Gen 1–4 with the Platinum/HG-SS sprites, Gen 1–5 with B/W),
-  with genus, types and the Pokédex entry in the display language (PokeAPI). The board shows one per day, in turn,
-  as the last page of the rotation. *New draw* picks a new pool.
+  with genus, types and the Pokédex entry in the display language (PokeAPI), shown as the last page of the rotation.
+  In *Energy & updates* you choose when it changes (time of day, every N days) and whether each round of the
+  pool comes in a new random order; the board works the schedule out by itself and the UI lists the next changes.
+  *New draw* picks a new pool.
 - **Weaknesses**: type matchups (Gen 6+ chart) for the card's types: 4×, 2×, ½×, ¼×, 0×. Abilities such as
   Levitate are not taken into account.
 
@@ -132,9 +134,16 @@ Off by default; turn them on in *Pages*.
 
 - *Pages* lists every page: tick it, move it with the arrows, and optionally give it its own **minutes on
   screen** (empty = the general *Page change* time). The Pokémon of the day always closes the rotation.
-- **Quiet hours** (*Display*): no automatic page change between two times; the button still works and the day
+- **Quiet hours** (*Energy & updates*): no automatic page change between two times; the button still works and the day
   counter still updates. With deep sleep on, the board sleeps through them.
-- **Page style**: classic black header, header in the accent ink (red on panels that have it), or light.
+- **Header style** (*Look*): classic black bar, bar in the accent ink (red on panels that have it), light,
+  a tab behind the name only, or an outlined bar.
+- **Frames** (*Look*): a border around the page, for all pages or a different one per page (*Pages*). Nine
+  geometric designs drawn in code (line, double, rounded, accent colour, dashed, retro chamfer, checker, studs,
+  wave), or **your own image**: upload any picture and it is used as a 9-slice frame (the border is a third of
+  its short side, corners stay, sides repeat; large images are reduced by a whole factor so the border is at most
+  8 px). The repository ships no frame images: the ones from the games are not ours to distribute, but you can
+  load your own. With a frame on, the page dots move up a few pixels.
 - **Screen upside down**: rotates everything by 180°, for a display mounted with the cable on the other side.
 - **Button**: a short press is always "next page"; a double click and a 1-second press can be set to
   previous page, next page or a full refresh. With a double-click action set, a single click waits 0.45 s.
@@ -211,8 +220,14 @@ level, EVs, IVs (default 31) and nature. History and ribbons are left untouched.
 
 ## Battery and deep sleep
 
-With *Display → Power saving* on, the board stays online for *Minutes online* after power-on or a button press,
+*Energy & updates* shows the battery (voltage and an estimated charge for a 1S LiPo; *Read again* refreshes it)
+and gathers everything about timing: page change, full refresh, quiet hours, deep sleep, low-battery threshold
+and the Pokémon of the day schedule. *Save to the display* sends only these settings (`/api/settings`), without
+sending the pages again; *Refresh the screen now* does a full refresh of the page on screen.
+
+With *Power saving* on, the board stays online for *Minutes online* after power-on or a button press,
 then deep-sleeps: it wakes on a timer to change page (no WiFi), at midnight to update the day counter,
+at the change time of the Pokémon of the day when that page is on screen,
 once a day for an NTP resync, and on the GPIO33 button (which also brings the web UI back).
 Waking from deep sleep resets the panel controller, so in this mode the midnight update is a full refresh;
 partial refresh of the counter is used when the board stays powered (USB).
@@ -294,11 +309,13 @@ load at render time, like the Pokémon sprites; nothing is stored in this reposi
 
 | Method | Path | Body |
 |---|---|---|
-| GET | `/api/info` | → `{w,h,api,panel,panelName,palette,bpp,partial,pageBudget,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy}` |
+| GET | `/api/info` | → `{w,h,api,panel,panelName,palette,bpp,partial,pageBudget,red,maxSlots,slotsFit,count,daily,entries,current,interval,sleep,awake,timeValid,today,batteryMv,fsUsed,fsTotal,version,ap,ssid,host,keySet,busy,features,dailyAt,dailyEvery,dailyShuffle,dailyIndex,dailyPick,sleepOn,intervalMin,batLowMv,fullEvery,uptime}` |
 | POST | `/api/frame?slot=N[&ov=x,y,w,h,align,startDay,color,sep]` | multipart file for slot N (0–47), a DXF1 frame of the panel's size (see *Frame format*); `ov` = day-counter box, `color` 0 black, 1 red, 2 yellow…; two optional fields more: `mode` (0 days since, 1 days until) and `scale` (1–4) |
 | GET | `/api/pages` | → `[{slot,size,crc,ov}]` for the stored pages (CRC-32 of the file) |
 | POST | `/api/glyphs` | multipart file: digit strip for the day counter (`[gw,gh,n,adv[n],bitmaps]`) |
-| POST | `/api/rotation` | form: `count` (regular pages), `interval` (minutes, `0` = button only), `daily` (pool size, slots after the regular ones), `sleep` (0/1), `awake` (min), `qf`/`qt` (quiet hours, minutes of the day, -1 = off), `iv` (minutes per rotation entry, comma separated, 0 = default), `flip` (0/1), `dbl`/`lng` (button actions: 0 none, 1 next, 2 previous, 3 full refresh), `batlow` (mV), `fullevery`, `tz` (POSIX), `now` (epoch s) |
+| POST | `/api/rotation` | form: `count` (regular pages), `interval` (minutes, `0` = button only), `daily` (pool size, slots after the regular ones), `sleep` (0/1), `awake` (min), `qf`/`qt` (quiet hours, minutes of the day, -1 = off), `iv` (minutes per rotation entry, comma separated, 0 = default), `flip` (0/1), `dbl`/`lng` (button actions: 0 none, 1 next, 2 previous, 3 full refresh), `batlow` (mV), `fullevery`, `dat` (Pokémon of the day change time, minutes of the day), `dev` (every N days, 1–30), `dsh` (shuffle each round, 0/1), `tz` (POSIX), `now` (epoch s) |
+| POST | `/api/settings` | the same settings as `/api/rotation` (any subset, no `count`/`daily`): stored without touching the pages; the page on screen is redrawn only if it changes |
+| POST | `/api/refresh` | full refresh of the page on screen |
 | POST | `/api/next` | show next page |
 | POST | `/api/show?slot=N` | show page N |
 | GET/POST | `/api/state` | card data JSON (≤64 KB) |
@@ -362,10 +379,11 @@ the repository needs *Settings → Pages → Source: GitHub Actions*.
 
 ```bash
 python3 tests/test_codec.py    # web UI encoder against the firmware decoder (needs node, g++)
+python3 tests/test_daily.py    # Pokémon of the day: web UI schedule against the firmware (needs node, g++)
 python3 tests/test_ui.py       # web UI against a fake board, every panel type (needs playwright + chromium)
 ```
 
-Both run in CI on every push, next to the firmware builds.
+All run in CI on every push, next to the firmware builds.
 
 ## Roadmap
 
@@ -381,6 +399,8 @@ Both run in CI on every push, next to the firmware builds.
 - [x] Spanish, French, German
 - [x] Colour on the 4-ink panel (sprites and type colours quantised to the panel's inks), colour preview
 - [x] Web installer (flash from the browser)
+- [x] Page frames (built-in and your own 9-slice image), more header styles
+- [x] Energy & updates section, settings saved without sending pages, Pokémon of the day schedule
 - [ ] 6-colour panels (firmware build; the web UI can already preview them)
 - [ ] Layouts that adapt to other panel sizes (2.9", 7.3")
 

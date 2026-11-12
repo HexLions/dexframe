@@ -39,3 +39,41 @@ function buildGlyphs() {
   return out;
 }
 
+
+// ---------- Pokémon of the day: schedule (same arithmetic as dailyIndex()/dailyPick() in the firmware) ----------
+const dailyEveryOf = (s = state) => Math.min(30, Math.max(1, Math.round(Number(s.dailyEvery) || 1)));
+const dailyAtOf = (s = state) => Math.max(0, minutesOfDay(s.dailyAt));
+function minutesOfDay(hhmm) { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : 0; }
+// Period number at time ms: local days counted from the change time, grouped by "every".
+function dailyIndexAt(ms, s = state) {
+  const t = new Date(ms - dailyAtOf(s) * 60000);
+  return Math.floor(Math.floor(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) / 86400000) / dailyEveryOf(s));
+}
+function dailyPickJs(n, count, shuffle) {
+  if (count <= 0 || n < 0) return 0;
+  const pos = n % count;
+  if (!shuffle) return pos;
+  const perm = Array.from({length: count}, (_, i) => i);
+  let r = (Math.imul(Math.floor(n / count), 0x9E3779B1) + 12345) >>> 0;
+  for (let i = count - 1; i > 0; i--) {
+    r = (Math.imul(r, 1664525) + 1013904223) >>> 0;
+    const j = r % (i + 1);
+    [perm[i], perm[j]] = [perm[j], perm[i]];
+  }
+  return perm[pos];
+}
+const dailyPickNow = (count, s = state) => dailyPickJs(dailyIndexAt(Date.now(), s), count, !!s.dailyShuffle);
+// The next k changes: [[Date, pool index], ...]
+function dailySchedule(count, k, s = state) {
+  const out = [], at = dailyAtOf(s);
+  let prev = dailyIndexAt(Date.now(), s);
+  const day = new Date(); day.setHours(0, 0, 0, 0);
+  for (let i = 0; out.length < k && i < 31 * k + 2; i++) {
+    const when = new Date(day.getFullYear(), day.getMonth(), day.getDate() + i, Math.floor(at / 60), at % 60);
+    if (when <= Date.now()) continue;
+    const n = dailyIndexAt(when.getTime() + 60000, s);
+    if (n !== prev) { out.push([when, dailyPickJs(n, count, !!s.dailyShuffle)]); prev = n; }
+  }
+  return out;
+}
+const fmtWhen = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;

@@ -84,6 +84,20 @@ details.adv .grid{margin-top:8px}
 .pgrow input[type=number]{width:72px;flex:none}
 .pgrow button{padding:4px 8px;flex:none}
 #pagesbox{margin-bottom:10px}
+.frgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:6px}
+.frtile{display:flex;flex-direction:column;align-items:center;gap:4px;padding:5px;font-size:11px;line-height:1.2}
+.frtile canvas{width:120px;height:76px;image-rendering:pixelated;border-radius:3px;border:1px solid var(--line)}
+.frtile[aria-pressed=true]{outline:2px solid var(--acc)}
+.btnlike{display:inline-block;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);font-size:13px;color:var(--fg)}
+.batline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.batgauge{width:64px;height:20px;border:2px solid var(--fg);border-radius:4px;padding:2px;position:relative}
+.batgauge::after{content:'';position:absolute;right:-6px;top:5px;width:3px;height:6px;background:var(--fg);border-radius:0 2px 2px 0}
+.batgauge i{display:block;height:100%;background:var(--acc);border-radius:1px;width:0}
+.batgauge i[data-low="1"]{background:#d33}
+#dlInfo{white-space:pre-line}
+.pgrow select{max-width:9.5em;min-width:0}
+.pgrow{flex-wrap:wrap}
+.pgrow label{flex:1 1 140px}
 </style>
 </head>
 <body>
@@ -445,6 +459,7 @@ const DEFAULTS = {
   cdTitle:'', cdDate:'', teamPer:6, pageOrder:[], pageMin:{},
   quietOn:false, quietFrom:'23:00', quietTo:'07:00', flip:false, btnDouble:0, btnLong:0, batLow:3.5, fullEvery:10,
   pageStyle:'classic', previewPanel:'',
+  frame:'none', pageFrame:{}, frameImg:'', dailyAt:'00:00', dailyEvery:1, dailyShuffle:false,
 };
 
 const typeOpts = (blank) => () => [...(blank ? [['', '—']] : []), ...TYPE_KEYS.map(k => [k, typeName(k, state.uiLang)])];
@@ -467,25 +482,29 @@ const GROUPS = [
     ['trBase','trBase','text','adv'],['trFile','trFile','text','adv']]],
   ['hof', [['hofRegion','hofRegion'],['hofDate','hofDate'],['hofStrength','hofStrength','number']]],
   ['collection', [['colRotation','colRotation','checkbox','wide']]],
-  ['display', [['dispLang','dispLang','select',langOpts],
-    ['style','style','select',() => Object.keys(SPRITES).map(k => [k, t('sp_' + k)])],
+  ['look', [['style','style','select',() => Object.keys(SPRITES).map(k => [k, t('sp_' + k)])],
     ['shiny','shiny','checkbox'],
-    ['panel','panel','select',() => Object.keys(PANELS).map(k => [k, panelLabel(k)])],
     ['dither','dither','select',() => [['blocks', t('dt_blocks')],['threshold', t('dt_threshold')]]],
     ['contrast','contrast','number'],
-    ['pageStyle','pageStyle','select',() => ['classic', 'accent', 'light'].map(k => [k, t('ps_' + k)])],
-    ['previewPanel','previewPanel','select',() => [['', t('pv_same')], ...Object.keys(PANELS).map(k => [k, panelLabel(k)])]],
-    ['interval','interval','number'],['deviceUrl','deviceUrl','text','wide'],
+    ['pageStyle','pageStyle','select',() => PAGE_STYLES.map(k => [k, t('ps_' + k)])],
+    ['frame','frame','select',() => frameOptions()],
+    ['previewPanel','previewPanel','select',() => [['', t('pv_same')], ...Object.keys(PANELS).map(k => [k, panelLabel(k)])]]]],
+  // battery, refresh and timing; the Pokémon of the day pool and its schedule (box: buildPowerBox)
+  ['power', [['interval','interval','number'],['fullEvery','fullEvery','number'],
     ['quietOn','quietOn','checkbox','wide'],['quietFrom','quietFrom','time'],['quietTo','quietTo','time'],
+    ['sleep','sleep','checkbox','wide'],['awake','awake','number'],['batLow','batLow','number'],
+    ['dailyCount','dailyCount','number'],['dailyAt','dailyAt','time'],['dailyEvery','dailyEvery','number'],
+    ['dailyShuffle','dailyShuffle','checkbox','wide']]],
+  ['display', [['dispLang','dispLang','select',langOpts],
+    ['panel','panel','select',() => Object.keys(PANELS).map(k => [k, panelLabel(k)])],
+    ['deviceUrl','deviceUrl','text','wide'],
     ['flip','flip','checkbox','wide'],
     ['btnDouble','btnDouble','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
     ['btnLong','btnLong','select',() => [0, 1, 2, 3].map(k => [k, t('ba_' + k)])],
-    ['sleep','sleep','checkbox','wide'],['awake','awake','number'],
-    ['batLow','batLow','number'],['fullEvery','fullEvery','number'],['tz','tz','text','adv']]],
+    ['tz','tz','text','adv']]],
   // which pages, their order and minutes: the list built by buildPagesBox()
   ['pages', [['teamPer','teamPer','select',() => [6, 3, 2].map(k => [k, t('tp_' + k)])],
-    ['cdTitle','cdTitle'],['cdDate','cdDate'],
-    ['dailyCount','dailyCount','number','wide']]],
+    ['cdTitle','cdTitle'],['cdDate','cdDate']]],
   ['system', []],
   ['backup', []],
 ];
@@ -948,6 +967,107 @@ Object.assign(TYPE_NAMES, {
     fighting:'Kampf',poison:'Gift',ground:'Boden',flying:'Flug',psychic:'Psycho',bug:'Käfer',
     rock:'Gestein',ghost:'Geist',dragon:'Drache',dark:'Unlicht',steel:'Stahl',fairy:'Fee'},
 });
+// ---------- i18n: 1.7 (look and energy sections, frames, Pokémon of the day schedule) ----------
+Object.assign(UI.it, {
+  g_look: 'Aspetto', g_power: 'Energia e aggiornamenti',
+  frame: 'Cornice delle pagine', pg_frame: 'Cornice di questa pagina', fr_default: 'Cornice generale',
+  fr_none: 'Nessuna', fr_line: 'Linea', fr_double: 'Doppia', fr_rounded: 'Arrotondata', fr_accent: 'Colore d\'accento',
+  fr_dashed: 'Tratteggiata', fr_chamfer: 'Retrò smussata', fr_checker: 'Scacchi', fr_studs: 'Borchie', fr_wave: 'Onda', fr_custom: 'La tua immagine',
+  fr_title: 'Cornici (angolo della pagina, ingrandito 2×)', fr_upload: 'Carica cornice…', fr_clear: 'Togli cornice caricata',
+  fr_info: 'La cornice vale per tutte le pagine; in Pagine puoi sceglierne una diversa per ognuna. Puoi caricare un\'immagine tua: il bordo è un terzo del lato corto, gli angoli restano fissi e i lati si ripetono.',
+  fr_custom_info: 'Cornice caricata: resta nei dati salvati e nel backup, non nel repository.',
+  ps_tab: 'Linguetta dietro al nome', ps_boxed: 'Testata incorniciata',
+  dailyCount: 'Pokémon del giorno: quanti nel gruppo (1-14)',
+  dailyAt: 'Pokémon del giorno: ora del cambio', dailyEvery: 'Cambia ogni N giorni (1-30)',
+  dailyShuffle: 'Ordine casuale nuovo a ogni giro del gruppo',
+  daily_next: 'Prossimi cambi: {l}',
+  pw_save: 'Salva sul display', pw_refresh: 'Aggiorna lo schermo ora', pw_read: 'Rileggi',
+  pw_info: '"Salva sul display" manda solo queste impostazioni (e quelle di Display): le pagine non vengono rimandate e quella sullo schermo resta. Anche "Invia tutte le pagine" le manda.',
+  pw_refreshing: 'Refresh completo in corso', pw_saved: 'Impostazioni salvate sul display',
+  pw_volt: '{v} V', pw_usb: 'in carica / alimentato da USB', pw_low: 'batteria scarica',
+  pw_nosense: 'Lettura batteria non attiva (BAT_PIN)', pw_nobat: 'Nessuna batteria collegata (alimentato da USB)',
+  pw_oldfw: 'firmware vecchio: aggiorna per salvare senza rimandare le pagine',
+});
+Object.assign(UI.en, {
+  g_look: 'Look', g_power: 'Energy & updates',
+  frame: 'Page frame', pg_frame: 'Frame of this page', fr_default: 'General frame',
+  fr_none: 'None', fr_line: 'Line', fr_double: 'Double', fr_rounded: 'Rounded', fr_accent: 'Accent colour',
+  fr_dashed: 'Dashed', fr_chamfer: 'Retro chamfer', fr_checker: 'Checker', fr_studs: 'Studs', fr_wave: 'Wave', fr_custom: 'Your image',
+  fr_title: 'Frames (corner of the page, at 2×)', fr_upload: 'Upload frame…', fr_clear: 'Remove uploaded frame',
+  fr_info: 'The frame applies to every page; in Pages each one can have its own. You can upload your own image: the border is a third of its short side, corners stay as they are and the sides repeat.',
+  fr_custom_info: 'Uploaded frame: kept in the saved data and in the backup, not in the repository.',
+  ps_tab: 'Tab behind the name', ps_boxed: 'Framed header',
+  dailyCount: 'Pokémon of the day: how many in the pool (1-14)',
+  dailyAt: 'Pokémon of the day: change time', dailyEvery: 'Change every N days (1-30)',
+  dailyShuffle: 'New random order on every round of the pool',
+  daily_next: 'Next changes: {l}',
+  pw_save: 'Save to the display', pw_refresh: 'Refresh the screen now', pw_read: 'Read again',
+  pw_info: '"Save to the display" sends only these settings (and the Display ones): pages are not sent again and the one on screen stays. "Send all pages" sends them too.',
+  pw_refreshing: 'Full refresh running', pw_saved: 'Settings saved to the display',
+  pw_volt: '{v} V', pw_usb: 'charging / on USB power', pw_low: 'battery low',
+  pw_nosense: 'Battery sensing off (BAT_PIN)', pw_nobat: 'No battery connected (USB powered)',
+  pw_oldfw: 'old firmware: update it to save without sending the pages again',
+});
+Object.assign(UI.es, {
+  g_look: 'Aspecto', g_power: 'Energía y actualizaciones',
+  frame: 'Marco de las páginas', pg_frame: 'Marco de esta página', fr_default: 'Marco general',
+  fr_none: 'Ninguno', fr_line: 'Línea', fr_double: 'Doble', fr_rounded: 'Redondeado', fr_accent: 'Color de acento',
+  fr_dashed: 'Discontinuo', fr_chamfer: 'Retro achaflanado', fr_checker: 'Ajedrez', fr_studs: 'Tachuelas', fr_wave: 'Onda', fr_custom: 'Tu imagen',
+  fr_title: 'Marcos (esquina de la página, a 2×)', fr_upload: 'Subir marco…', fr_clear: 'Quitar el marco subido',
+  fr_info: 'El marco vale para todas las páginas; en Páginas cada una puede tener el suyo. Puedes subir una imagen tuya: el borde es un tercio del lado corto, las esquinas quedan fijas y los lados se repiten.',
+  fr_custom_info: 'Marco subido: se guarda en los datos y en la copia de seguridad, no en el repositorio.',
+  ps_tab: 'Pestaña detrás del nombre', ps_boxed: 'Cabecera enmarcada',
+  dailyCount: 'Pokémon del día: cuántos en el grupo (1-14)',
+  dailyAt: 'Pokémon del día: hora del cambio', dailyEvery: 'Cambiar cada N días (1-30)',
+  dailyShuffle: 'Nuevo orden aleatorio en cada vuelta del grupo',
+  daily_next: 'Próximos cambios: {l}',
+  pw_save: 'Guardar en la pantalla', pw_refresh: 'Refrescar la pantalla ahora', pw_read: 'Volver a leer',
+  pw_info: '"Guardar en la pantalla" envía solo estos ajustes (y los de Pantalla): las páginas no se envían de nuevo y la que está en pantalla se queda. "Enviar todas las páginas" también los envía.',
+  pw_refreshing: 'Refresco completo en curso', pw_saved: 'Ajustes guardados en la pantalla',
+  pw_volt: '{v} V', pw_usb: 'cargando / alimentado por USB', pw_low: 'batería baja',
+  pw_nosense: 'Lectura de batería desactivada (BAT_PIN)', pw_nobat: 'Sin batería conectada (alimentado por USB)',
+  pw_oldfw: 'firmware antiguo: actualízalo para guardar sin reenviar las páginas',
+});
+Object.assign(UI.fr, {
+  g_look: 'Apparence', g_power: 'Énergie et mises à jour',
+  frame: 'Cadre des pages', pg_frame: 'Cadre de cette page', fr_default: 'Cadre général',
+  fr_none: 'Aucun', fr_line: 'Ligne', fr_double: 'Double', fr_rounded: 'Arrondi', fr_accent: 'Couleur d\'accent',
+  fr_dashed: 'Tirets', fr_chamfer: 'Rétro biseauté', fr_checker: 'Damier', fr_studs: 'Rivets', fr_wave: 'Vague', fr_custom: 'Votre image',
+  fr_title: 'Cadres (coin de la page, en 2×)', fr_upload: 'Importer un cadre…', fr_clear: 'Retirer le cadre importé',
+  fr_info: 'Le cadre s\'applique à toutes les pages ; dans Pages chacune peut avoir le sien. Vous pouvez importer votre image : la bordure fait un tiers du petit côté, les coins restent tels quels et les côtés se répètent.',
+  fr_custom_info: 'Cadre importé : gardé dans les données enregistrées et la sauvegarde, pas dans le dépôt.',
+  ps_tab: 'Onglet derrière le nom', ps_boxed: 'En-tête encadré',
+  dailyCount: 'Pokémon du jour : combien dans le groupe (1-14)',
+  dailyAt: 'Pokémon du jour : heure du changement', dailyEvery: 'Changer tous les N jours (1-30)',
+  dailyShuffle: 'Nouvel ordre aléatoire à chaque tour du groupe',
+  daily_next: 'Prochains changements : {l}',
+  pw_save: 'Enregistrer sur l\'écran', pw_refresh: 'Rafraîchir l\'écran maintenant', pw_read: 'Relire',
+  pw_info: '« Enregistrer sur l\'écran » n\'envoie que ces réglages (et ceux d\'Écran) : les pages ne sont pas renvoyées et celle à l\'écran reste. « Envoyer toutes les pages » les envoie aussi.',
+  pw_refreshing: 'Rafraîchissement complet en cours', pw_saved: 'Réglages enregistrés sur l\'écran',
+  pw_volt: '{v} V', pw_usb: 'en charge / alimenté par USB', pw_low: 'batterie faible',
+  pw_nosense: 'Lecture de la batterie désactivée (BAT_PIN)', pw_nobat: 'Pas de batterie branchée (alimenté par USB)',
+  pw_oldfw: 'ancien firmware : mettez-le à jour pour enregistrer sans renvoyer les pages',
+});
+Object.assign(UI.de, {
+  g_look: 'Aussehen', g_power: 'Energie und Updates',
+  frame: 'Seitenrahmen', pg_frame: 'Rahmen dieser Seite', fr_default: 'Allgemeiner Rahmen',
+  fr_none: 'Keiner', fr_line: 'Linie', fr_double: 'Doppelt', fr_rounded: 'Abgerundet', fr_accent: 'Akzentfarbe',
+  fr_dashed: 'Gestrichelt', fr_chamfer: 'Retro abgeschrägt', fr_checker: 'Schachbrett', fr_studs: 'Nieten', fr_wave: 'Welle', fr_custom: 'Dein Bild',
+  fr_title: 'Rahmen (Ecke der Seite, in 2×)', fr_upload: 'Rahmen hochladen…', fr_clear: 'Hochgeladenen Rahmen entfernen',
+  fr_info: 'Der Rahmen gilt für alle Seiten; unter Seiten kann jede ihren eigenen haben. Du kannst ein eigenes Bild hochladen: der Rand ist ein Drittel der kurzen Seite, die Ecken bleiben, die Seiten wiederholen sich.',
+  fr_custom_info: 'Hochgeladener Rahmen: in den gespeicherten Daten und der Sicherung, nicht im Repository.',
+  ps_tab: 'Reiter hinter dem Namen', ps_boxed: 'Umrahmte Kopfzeile',
+  dailyCount: 'Pokémon des Tages: wie viele in der Gruppe (1-14)',
+  dailyAt: 'Pokémon des Tages: Uhrzeit des Wechsels', dailyEvery: 'Alle N Tage wechseln (1-30)',
+  dailyShuffle: 'Neue zufällige Reihenfolge bei jeder Runde der Gruppe',
+  daily_next: 'Nächste Wechsel: {l}',
+  pw_save: 'Auf dem Display speichern', pw_refresh: 'Bildschirm jetzt aktualisieren', pw_read: 'Neu lesen',
+  pw_info: '„Auf dem Display speichern“ sendet nur diese Einstellungen (und die unter Display): die Seiten werden nicht neu gesendet, die angezeigte bleibt. „Alle Seiten senden“ sendet sie auch.',
+  pw_refreshing: 'Vollständige Aktualisierung läuft', pw_saved: 'Einstellungen auf dem Display gespeichert',
+  pw_volt: '{v} V', pw_usb: 'lädt / über USB versorgt', pw_low: 'Akku schwach',
+  pw_nosense: 'Akkumessung aus (BAT_PIN)', pw_nobat: 'Kein Akku angeschlossen (über USB versorgt)',
+  pw_oldfw: 'alte Firmware: aktualisieren, um ohne erneutes Senden der Seiten zu speichern',
+});
 // ---------- form ----------
 function buildForm() {
   const form = $('form');
@@ -982,6 +1102,8 @@ function buildForm() {
       if (key === 'panel' && deviceInfo) el.disabled = true;  // detected from firmware
       if (key === 'panel') [...el.options].forEach(o => { if (PANELS[o.value]?.previewOnly) o.remove(); });
       if (key === 'batLow') { el.step = '0.05'; el.min = '3'; el.max = '4.2'; }
+      if (key === 'dailyEvery') { el.min = '1'; el.max = '30'; }
+      if (key === 'frame') el.addEventListener('input', () => renderFrameBox());
       if (key === 'deviceUrl') el.addEventListener('change', async () => {
         try { localStorage.setItem('dexframe', JSON.stringify(state)); } catch {}   // detectDevice re-reads it
         await detectDevice(); migrate(state);
@@ -990,7 +1112,7 @@ function buildForm() {
       });
       el.addEventListener('input', () => {
         state[key] = type === 'checkbox' ? el.checked : type === 'number' || ['teamPer', 'btnDouble', 'btnLong'].includes(key) ? Number(el.value) : el.value;
-        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'style', 'teamPer', 'team', 'hofTeam'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
+        if (key.startsWith('pg_') || ['colRotation', 'dailyCount', 'dailyAt', 'dailyEvery', 'dailyShuffle', 'style', 'teamPer', 'team', 'hofTeam'].includes(key)) { buildTabs(); renderCollection(); renderDailyBox(); }
         if (key === 'dispLang' || key === 'ribbons') renderPicker();   // names follow the display language
         if (key === 'trBase' || key === 'trFile') renderTrainerPicker();
         if (key === 'team' || key === 'dex' || key === 'style' || key === 'shiny' || key === 'dispLang') renderMonPickers();
@@ -1514,18 +1636,35 @@ function raysBackdrop(ink, y0, strength, protect) {
   }
 }
 
-// Shared chrome: black header with name + page title, page dots at the bottom.
+// Thickness of the frame of the page being drawn (26-frames.js): the page dots sit above it.
+let chromeFrameT = 0;
+const setFrameForChrome = t => { chromeFrameT = t; };
+
+// Shared chrome: header with name + page title, page dots at the bottom.
+// Header styles: classic = black bar, accent = bar in the accent ink, light = white bar
+// with a rule, tab = black tab behind the name only, boxed = outlined white bar.
 function chrome(ctx, s, title, idx, total, name = s.name, gender = s.gender) {
   ctx.fillStyle = WHITE; ctx.fillRect(0, 0, W, H);
-  // page style: classic = black bar, accent = bar in the accent ink, light = white bar with a rule
-  const light = s.pageStyle === 'light', fg = light ? BLACK : WHITE;
-  ctx.fillStyle = light ? BLACK : s.pageStyle === 'accent' ? accent(s) : BLACK;
-  if (light) ctx.fillRect(0, 28, W, 2); else ctx.fillRect(0, 0, W, 30);
-  const titleW = title ? text(ctx, up(title), W - 10, 11, 8, true, fg, 'right') : 0;
-  const nw = text(ctx, up(name), 10, 7, 16, true, fg, 'left', W - titleW - 50);
+  const st = PAGE_STYLES.includes(s.pageStyle) ? s.pageStyle : 'classic';
+  const barFg = st === 'classic' || st === 'accent';
+  ctx.fillStyle = st === 'accent' ? accent(s) : BLACK;
+  if (barFg) ctx.fillRect(0, 0, W, 30);
+  else if (st === 'boxed') { box(ctx, 0, 0, W, 30, false); ctx.fillStyle = BLACK; ctx.fillRect(0, 28, W, 2); }
+  else ctx.fillRect(0, 28, W, 2);
+  const titleW = title ? measure(up(title), 8, true) : 0;
+  const nameMax = W - titleW - 50;
+  if (st === 'tab') {      // tab sized to the name, with a slanted end
+    const tw = Math.min(nameMax, measure(up(name), 16, true)) + (gender && gender !== '-' ? 22 : 0) + 20;
+    ctx.fillStyle = BLACK; ctx.fillRect(0, 0, tw, 30);
+    for (let k = 0; k < 14; k++) ctx.fillRect(tw + k, 2 * k + 2, 1, 28 - 2 * k);
+  }
+  const fg = barFg || st === 'tab' ? WHITE : BLACK;
+  if (title) text(ctx, up(title), W - 10, 11, 8, true, st === 'tab' ? BLACK : fg, 'right');
+  const nw = text(ctx, up(name), 10, 7, 16, true, fg, 'left', nameMax);
   if (gender && gender !== '-') drawGender(ctx, 10 + nw + 8, 8, gender, fg);
   const dotsX = W / 2 - (total * 12 - 4) / 2;
-  for (let i = 0; i < total; i++) box(ctx, dotsX + i * 12, 288, 8, 8, i === idx);
+  const dotsY = Math.min(288, H - chromeFrameT - 10);
+  for (let i = 0; i < total; i++) box(ctx, dotsX + i * 12, dotsY, 8, 8, i === idx);
 }
 
 // label (8px) above value (16px)
@@ -1549,6 +1688,192 @@ function wrapLines(str, px, bold, maxW) {
   return lines;
 }
 
+// ---------- page frames ----------
+// Borders drawn around the whole page after everything else. All original, geometric
+// designs made in code (no game assets); "custom" is a 9-slice image the user uploads,
+// kept in the saved data like the other uploaded images. Thickness is at most 8 px:
+// page content keeps 10 px from the sides, the page dots move up to make room.
+const PAGE_STYLES = ['classic', 'accent', 'light', 'tab', 'boxed'];
+const FRAME_T = {none: 0, line: 3, double: 5, rounded: 5, accent: 5, dashed: 5, chamfer: 6, checker: 6, studs: 6, wave: 6};
+const FRAME_KEYS = [...Object.keys(FRAME_T), 'custom'];
+const frameOptions = () => FRAME_KEYS.filter(k => k !== 'custom' || state.frameImg).map(k => [k, t('fr_' + k)]);
+const frameOf = (s, key) => {
+  const f = (s.pageFrame || {})[key] || s.frame || 'none';
+  return f === 'custom' && !s.frameImg ? 'none' : FRAME_KEYS.includes(f) ? f : 'none';
+};
+const frameThickness = (s, key) => {
+  const f = frameOf(s, key);
+  return f === 'custom' ? Math.min(8, Number(s.frameSlice) || 0) : FRAME_T[f] || 0;
+};
+
+// Ink for one pixel of the band. d = distance from the outer edge (0 = outermost),
+// along = position along the edge, cx/cy = distance from the nearest corner on each axis.
+function framePixel(style, d, along, cx, cy, x, y, acc, hasAcc) {
+  const mid = hasAcc ? acc : ((x + y) & 1);     // accent ink, or a 50 % checker on B/W
+  switch (style) {
+    case 'line': return d < 2 ? 1 : 0;
+    case 'double': return d < 2 || d === 3 ? 1 : 0;
+    case 'rounded': {
+      const r = 9;
+      if (cx < r && cy < r) {                    // round the corner: distance from the arc
+        const dd = r - Math.hypot(r - cx - 0.5, r - cy - 0.5);
+        if (dd < 0) return 0;
+        d = Math.floor(dd);
+      }
+      return d < 2 || d === 3 ? 1 : 0;
+    }
+    case 'accent': return d === 0 || d === 3 ? 1 : d < 3 ? mid : 0;
+    case 'dashed': return d < 2 ? (Math.floor(along / 6) % 2 === 0 || (cx < 6 && cy < 6) ? 1 : 0) : d === 3 ? 1 : 0;
+    case 'chamfer': {
+      if (cx + cy < 4) return 0;                 // cut corners
+      if (cx + cy === 4) return 1;
+      return d === 0 || d === 2 || d === 3 || d === 5 ? 1 : 0;
+    }
+    case 'checker': return d === 0 || d === 4 ? 1 : d < 4 ? ((x >> 1) + (y >> 1)) & 1 : 0;
+    case 'studs': {
+      const stud = (cx < 6 && cy < 6) || Math.abs(along - (cx < cy ? H : W) / 2) < 4;
+      if (stud) return (d === 2 || d === 3) && (cx < 6 && cy < 6 ? (cx === 2 || cx === 3) && (cy === 2 || cy === 3) : true) ? 0 : hasAcc && d > 0 && d < 5 ? acc : 1;
+      return d < 2 || d === 3 ? 1 : 0;
+    }
+    case 'wave': {
+      if (cx < 6 && cy < 6) return Math.abs(cx - 2.5) + Math.abs(cy - 2.5) <= 2.6 ? (hasAcc ? acc : 1) : 0;
+      const w = 2.5 + 2 * Math.sin(along * Math.PI / 6);
+      return Math.abs(d - w) < 0.9 || d === 5 ? 1 : 0;
+    }
+  }
+  return 0;
+}
+
+// Decoded custom frame, cached by data URL: {w, h, rgba}
+let customFrame = {url: '', img: null};
+async function customFramePixels(url) {
+  if (customFrame.url === url) return customFrame.img;
+  const im = await loadLocalImage(url);
+  let px = null;
+  if (im) {
+    const c = document.createElement('canvas'); c.width = im.naturalWidth; c.height = im.naturalHeight;
+    const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(im, 0, 0);
+    px = {w: c.width, h: c.height, rgba: x.getImageData(0, 0, c.width, c.height).data};
+  }
+  customFrame = {url, img: px};
+  return px;
+}
+
+// Draws the frame of this page into ink (W x H ink codes), clearing the band first.
+async function applyFrame(ink, s, key) {
+  const style = frameOf(s, key), T = frameThickness(s, key);
+  if (!T) return;
+  const pal = panelOf(s).palette;
+  const hasAcc = pal.includes('red'), acc = inkCode('red');
+  let img = null;
+  if (style === 'custom') { img = await customFramePixels(s.frameImg); if (!img) return; }
+  const palOpt = {palette: pal.map(inkCode), contrast: 0};
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const cx = Math.min(x, W - 1 - x), cy = Math.min(y, H - 1 - y), d = Math.min(cx, cy);
+    if (d >= T) { x = W - 1 - T; continue; }      // jump over the inside of the row
+    const i = y * W + x;
+    if (!img) { ink[i] = framePixel(style, d, cx <= cy ? y : x, cx, cy, x, y, acc, hasAcc); continue; }
+    // 9-slice: corners as they are, edges repeat their middle part
+    const b = T, sx = x < b ? x : x >= W - b ? img.w - (W - x) : b + (x - b) % Math.max(1, img.w - 2 * b);
+    const sy = y < b ? y : y >= H - b ? img.h - (H - y) : b + (y - b) % Math.max(1, img.h - 2 * b);
+    const o = (sy * img.w + sx) * 4, r = img.rgba[o], g = img.rgba[o + 1], bl = img.rgba[o + 2];
+    const th = (BAYER[4][y & 3][x & 3] + 0.5) / 16;
+    if (img.rgba[o + 3] < 128) ink[i] = 0;
+    else if (pal.length > 2) ink[i] = paletteInk(r, g, bl, palOpt, th);
+    else ink[i] = 1 - (0.299 * r + 0.587 * g + 0.114 * bl) / 255 > th ? 1 : 0;
+  }
+}
+
+// Upload: any image; the border is a third of its short side. Big images are reduced
+// by a whole factor (pixel art stays sharp) so the border is at most 8 px.
+async function uploadFrame(file) {
+  const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+  const im = await loadLocalImage(url);
+  if (!im || im.naturalWidth < 6 || im.naturalHeight < 6) throw new Error('image');
+  const b0 = Math.floor(Math.min(im.naturalWidth, im.naturalHeight) / 3);
+  const k = Math.max(1, Math.ceil(b0 / 8), Math.ceil(Math.max(im.naturalWidth, im.naturalHeight) / 96));
+  const c = document.createElement('canvas');
+  c.width = Math.max(6, Math.floor(im.naturalWidth / k)); c.height = Math.max(6, Math.floor(im.naturalHeight / k));
+  const x = c.getContext('2d'); x.imageSmoothingEnabled = false;
+  x.drawImage(im, 0, 0, c.width, c.height);
+  state.frameImg = c.toDataURL('image/png');
+  state.frameSlice = Math.max(2, Math.min(8, Math.floor(Math.min(c.width, c.height) / 3)));
+  state.frame = 'custom';
+}
+
+// Picker: a corner of every frame on a page with the chosen header style, at 2x.
+function buildFrameBox() {
+  const fs = document.querySelector('fieldset[data-group="look"]');
+  if (!fs || $('framebox')) return;
+  const box = document.createElement('div'); box.className = 'trbox'; box.id = 'framebox';
+  box.innerHTML = `<strong style="font-size:13px" id="frTitle"></strong><div class="frgrid" id="frGrid"></div>
+    <div class="cur"><span class="muted" id="frInfo"></span>
+    <label class="chk" style="cursor:pointer"><input type="file" id="frFile" accept="image/*" hidden><span id="frUp" class="btnlike"></span></label>
+    <button type="button" id="frClr"></button></div>`;
+  fs.querySelector('.grid').after(box);
+  $('frFile').addEventListener('change', async ev => {
+    const f = ev.target.files?.[0]; ev.target.value = '';
+    if (!f) return;
+    try { await uploadFrame(f); refreshFrameSelect(); renderFrameBox(); scheduleRender(); }
+    catch { setStatus(t('tr_bad')); }
+  });
+  $('frClr').onclick = () => {
+    state.frameImg = ''; state.frameSlice = 0;
+    if (state.frame === 'custom') state.frame = 'none';
+    refreshFrameSelect(); renderFrameBox(); scheduleRender();
+  };
+  renderFrameBox();
+}
+
+// The frame <select> lists "custom" only while an image is loaded.
+function refreshFrameSelect() {
+  const sel = document.querySelector('select[name=frame]');
+  if (!sel) return;
+  sel.replaceChildren(...frameOptions().map(([v, txt]) => new Option(txt, v)));
+  sel.value = state.frame || 'none';
+  renderPagesBox();
+}
+
+function renderFrameBox() {
+  if (!$('framebox')) return;
+  $('frTitle').textContent = t('fr_title');
+  $('frUp').textContent = t('fr_upload');
+  $('frClr').textContent = t('fr_clear');
+  $('frClr').style.display = state.frameImg ? '' : 'none';
+  $('frInfo').textContent = t(state.frameImg ? 'fr_custom_info' : 'fr_info');
+  const keys = FRAME_KEYS.filter(k => k !== 'custom' || state.frameImg);
+  const tiles = keys.map(k => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'frtile';
+    b.setAttribute('aria-pressed', (state.frame || 'none') === k);
+    const cv = document.createElement('canvas'); cv.width = 120; cv.height = 76;
+    const cap = document.createElement('span'); cap.textContent = t('fr_' + k);
+    b.append(cv, cap);
+    b.onclick = () => {
+      state.frame = k;
+      const sel = document.querySelector('select[name=frame]'); if (sel) sel.value = k;
+      renderFrameBox(); scheduleRender();
+    };
+    drawFrameThumb(cv, k);
+    return b;
+  });
+  $('frGrid').replaceChildren(...tiles);
+}
+
+async function drawFrameThumb(cv, k) {
+  const s = {...state, frame: k, pageFrame: {}};
+  const work = document.createElement('canvas'); work.width = W; work.height = H;
+  const ctx = work.getContext('2d', {willReadFrequently: true});
+  setFrameForChrome(frameThickness(s, 'cover'));
+  chrome(ctx, s, '', 0, 3, 'NAME', '-');
+  const ink = canvasToInk(ctx, panelOf(s).palette);
+  await applyFrame(ink, s, 'cover');
+  const out = cv.getContext('2d'), img = out.createImageData(120, 76);
+  for (let y = 0; y < 76; y++) for (let x = 0; x < 120; x++) {
+    const [r, g, b] = INKS[ink[(y >> 1) * W + (x >> 1)]].rgb;
+    img.data.set([r, g, b, 255], (y * 120 + x) * 4);
+  }
+  out.putImageData(img, 0, 0);
+}
 // ---------- dates and the day counter ----------
 // "26/04/2011", "26.04.2011" or "2011-04-26" -> days since 1970-01-01 (calendar day, no time zone).
 function parseDay(str) {
@@ -1590,6 +1915,44 @@ function buildGlyphs() {
   return out;
 }
 
+
+// ---------- Pokémon of the day: schedule (same arithmetic as dailyIndex()/dailyPick() in the firmware) ----------
+const dailyEveryOf = (s = state) => Math.min(30, Math.max(1, Math.round(Number(s.dailyEvery) || 1)));
+const dailyAtOf = (s = state) => Math.max(0, minutesOfDay(s.dailyAt));
+function minutesOfDay(hhmm) { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : 0; }
+// Period number at time ms: local days counted from the change time, grouped by "every".
+function dailyIndexAt(ms, s = state) {
+  const t = new Date(ms - dailyAtOf(s) * 60000);
+  return Math.floor(Math.floor(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) / 86400000) / dailyEveryOf(s));
+}
+function dailyPickJs(n, count, shuffle) {
+  if (count <= 0 || n < 0) return 0;
+  const pos = n % count;
+  if (!shuffle) return pos;
+  const perm = Array.from({length: count}, (_, i) => i);
+  let r = (Math.imul(Math.floor(n / count), 0x9E3779B1) + 12345) >>> 0;
+  for (let i = count - 1; i > 0; i--) {
+    r = (Math.imul(r, 1664525) + 1013904223) >>> 0;
+    const j = r % (i + 1);
+    [perm[i], perm[j]] = [perm[j], perm[i]];
+  }
+  return perm[pos];
+}
+const dailyPickNow = (count, s = state) => dailyPickJs(dailyIndexAt(Date.now(), s), count, !!s.dailyShuffle);
+// The next k changes: [[Date, pool index], ...]
+function dailySchedule(count, k, s = state) {
+  const out = [], at = dailyAtOf(s);
+  let prev = dailyIndexAt(Date.now(), s);
+  const day = new Date(); day.setHours(0, 0, 0, 0);
+  for (let i = 0; out.length < k && i < 31 * k + 2; i++) {
+    const when = new Date(day.getFullYear(), day.getMonth(), day.getDate() + i, Math.floor(at / 60), at % 60);
+    if (when <= Date.now()) continue;
+    const n = dailyIndexAt(when.getTime() + 60000, s);
+    if (n !== prev) { out.push([when, dailyPickJs(n, count, !!s.dailyShuffle)]); prev = n; }
+  }
+  return out;
+}
+const fmtWhen = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 // ---------- type chart (gen 6+): attacker -> [super effective, not very effective, no effect] ----------
 const CHART = {
   normal: [[], ['rock','steel'], ['ghost']],
@@ -1774,7 +2137,7 @@ const PAGES = {
     header: (s, a) => [a?.name || '—', '-'],
     async prepare(s) {
       const ids = dailyIds(s);
-      const id = s._dailyId ?? ids[todayDay() % ids.length];
+      const id = s._dailyId ?? ids[dailyPickNow(ids.length)];
       const lang = state.dispLang;
       const [p, sp, img] = await Promise.all([pj(`pokemon/${id}`), pj(`pokemon-species/${id}`),
         getSprite(spriteUrl(s.style, id, false)).catch(() => null)]);
@@ -2060,6 +2423,7 @@ async function renderPage(key, s = state, idx, total, part = 0) {
   const work = document.createElement('canvas'); work.width = W; work.height = H;
   const ctx = work.getContext('2d', {willReadFrequently: true});
   const assets = page.prepare ? await page.prepare(s) : {blits: []};
+  setFrameForChrome(frameThickness(s, key));
   chrome(ctx, s, d(key), idx, total, ...(page.header ? page.header(s, assets) : []));
   page.draw(ctx, s, acc, assets);
   const ink = canvasToInk(ctx, panelOf(s).palette);
@@ -2072,6 +2436,7 @@ async function renderPage(key, s = state, idx, total, part = 0) {
     const sp = spritePixels(img);
     if (sp) blitSprite(ink, sp, ...page.spriteArea, opt);
   }
+  await applyFrame(ink, s, key);
   ink.overlay = assets.overlay || null;
   return ink;
 }
@@ -2704,7 +3069,7 @@ function renderCollection() {
 
 // ---------- Pokémon of the day: pool info + new draw ----------
 function buildDailyBox() {
-  const fs = document.querySelector('fieldset[data-group="pages"]');
+  const fs = document.querySelector('fieldset[data-group="power"]');
   if (!fs || $('dailybox')) return;
   const box = document.createElement('div'); box.className = 'trbox'; box.id = 'dailybox';
   box.innerHTML = `<div class="row" style="margin-top:0"><button type="button" id="dlShuffle"></button><span class="muted" id="dlInfo"></span></div>`;
@@ -2717,7 +3082,9 @@ function renderDailyBox() {
   if (!$('dailybox')) return;
   $('dailybox').style.display = state.pg_daily ? '' : 'none';
   const ids = dailyIds();
-  $('dlInfo').textContent = t('daily_info', {t: ids[todayDay() % ids.length], n: ids.length, l: ids.map(i => '#' + i).join(' ')});
+  const next = dailySchedule(ids.length, 4).map(([when, k]) => fmtWhen(when) + ' #' + ids[k]).join(' · ');
+  $('dlInfo').textContent = t('daily_info', {t: ids[dailyPickNow(ids.length)], n: ids.length, l: ids.map(i => '#' + i).join(' ')}) +
+    (ids.length > 1 ? '\n' + t('daily_next', {l: next}) : '');
 }
 
 // ---------- pages: which ones, in which order, for how long ----------
@@ -2761,7 +3128,17 @@ function renderPagesBox() {
       };
       return b;
     };
-    row.append(lab, min, move('▲', -1), move('▼', 1));
+    const fr = document.createElement('select'); fr.title = t('pg_frame'); fr.setAttribute('aria-label', t('pg_frame'));
+    fr.add(new Option(t('fr_default'), ''));
+    for (const [v, txt] of frameOptions()) fr.add(new Option(txt, v));
+    fr.value = (state.pageFrame || {})[key] || '';
+    fr.oninput = () => {
+      state.pageFrame = {...(state.pageFrame || {})};
+      if (fr.value) state.pageFrame[key] = fr.value; else delete state.pageFrame[key];
+      if (previewPage !== key) { previewPage = key; previewPart = 0; previewCard = null; buildTabs(); }
+      scheduleRender(); saveState(true);
+    };
+    row.append(lab, min, fr, move('▲', -1), move('▼', 1));
     return row;
   });
   $('pgList').replaceChildren(...rows);
@@ -2773,6 +3150,105 @@ function exportPng() {
   a.download = `dexframe-${previewCard ? 'card' : previewPage}${previewPart ? '-' + (previewPart + 1) : ''}.png`;
   a.href = $('out').toDataURL('image/png');
   a.click();
+}
+// ---------- Energy & updates: battery state, refresh, timing, Pokémon of the day schedule ----------
+// Settings go to the board with "Send all pages", or alone with "Save to the display"
+// (POST /api/settings: no page is sent again, the page on screen stays).
+
+// Resting voltage -> charge of a 1S LiPo, linear between the points. Only a guide:
+// the curve depends on the cell, its age and the load.
+const LIPO = [[4200, 100], [4100, 90], [4000, 78], [3900, 63], [3800, 47], [3700, 30], [3600, 15], [3500, 6], [3400, 2], [3300, 0]];
+function lipoPercent(mv) {
+  if (mv >= LIPO[0][0]) return 100;
+  for (let i = 1; i < LIPO.length; i++) {
+    const [v1, p1] = LIPO[i - 1], [v0, p0] = LIPO[i];
+    if (mv >= v0) return Math.round(p0 + (p1 - p0) * (mv - v0) / (v1 - v0));
+  }
+  return 0;
+}
+
+const dailySettings = (s = state) => ({dat: dailyAtOf(s), dev: dailyEveryOf(s), dsh: s.dailyShuffle ? 1 : 0});
+
+// The rotation settings that make sense without sending the pages again.
+function settingsBody() {
+  const entries = rotation(), daily = state.pg_daily ? dailyIds() : [];
+  const mins = k => Math.max(0, Math.round(Number((state.pageMin || {})[k]) || 0));
+  const body = {interval: Math.max(0, Number(state.interval) || 0),
+    sleep: state.sleep ? 1 : 0, awake: Math.max(1, Number(state.awake) || 3),
+    tz: state.tz || DEFAULTS.tz, now: Math.floor(Date.now() / 1000),
+    qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
+    flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
+    batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10)),
+    ...dailySettings()};
+  // per-page minutes only when the pages on the board are the ones listed here
+  if (deviceInfo && deviceInfo.count === entries.length && (deviceInfo.daily || 0) === daily.length)
+    body.iv = [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(',');
+  return new URLSearchParams(body);
+}
+
+// Fresh /api/info (battery, schedule) without reloading the saved data from the board.
+async function readInfo() {
+  if (!deviceInfo) return;
+  try {
+    const r = await fetch(api('/api/info'), {cache: 'no-store'});
+    if (r.ok) { deviceInfo = await r.json(); setConnected(); }
+  } catch {}
+}
+
+function buildPowerBox() {
+  const fs = document.querySelector('fieldset[data-group="power"]');
+  if (!fs || $('powerbox')) return;
+  const box = document.createElement('div'); box.className = 'trbox'; box.id = 'powerbox';
+  box.innerHTML = `<div class="batline"><div class="batgauge"><i id="pwBar"></i></div><strong id="pwPct"></strong><span class="muted" id="pwTxt"></span></div>
+    <div class="row" style="margin-top:0"><button type="button" class="primary" id="pwSave"></button>
+    <button type="button" id="pwRefresh"></button><button type="button" id="pwRead"></button><span class="muted" id="pwSt"></span></div>
+    <div class="muted" id="pwInfo"></div>`;
+  fs.querySelector('legend').after(box);
+  $('pwSave').onclick = saveSettingsOnly;
+  $('pwRefresh').onclick = async () => {
+    if (!deviceInfo) { $('pwSt').textContent = t('st_no_device'); return; }
+    const r = await fetch(api('/api/refresh'), {method: 'POST'}).catch(() => null);
+    $('pwSt').textContent = r?.ok ? t('pw_refreshing') : t('st_err', {e: r ? r.status : 'network'});
+  };
+  $('pwRead').onclick = async () => { await readInfo(); renderPowerBox(); };
+  renderPowerBox();
+}
+
+function renderPowerBox() {
+  if (!$('powerbox')) return;
+  $('pwSave').textContent = t('pw_save');
+  $('pwRefresh').textContent = t('pw_refresh');
+  $('pwRead').textContent = t('pw_read');
+  $('pwInfo').textContent = t('pw_info');
+  const feat = String(deviceInfo?.features || '').split(',');
+  $('pwSave').disabled = !deviceInfo || !feat.includes('settings');
+  $('pwRefresh').disabled = !deviceInfo || !feat.includes('refresh');
+  const mv = deviceInfo?.batteryMv;
+  let pct = null, txt;
+  if (!deviceInfo) txt = t('st_no_device');
+  else if (mv == null || mv < 0) txt = t('pw_nosense');
+  else if (mv < 1000) txt = t('pw_nobat');
+  else {
+    pct = lipoPercent(mv);
+    const low = (Number(state.batLow) || 3.5) * 1000;
+    txt = t('pw_volt', {v: (mv / 1000).toFixed(2)}) + (mv > 4150 ? ' · ' + t('pw_usb') : mv <= low ? ' · ' + t('pw_low') : '');
+  }
+  if (deviceInfo && !feat.includes('settings')) txt += ' · ' + t('pw_oldfw');
+  $('pwPct').textContent = pct == null ? '—' : pct + '%';
+  $('pwTxt').textContent = txt;
+  $('pwBar').style.width = (pct ?? 0) + '%';
+  $('pwBar').dataset.low = pct != null && pct <= 15 ? '1' : '';
+}
+
+async function saveSettingsOnly() {
+  if (!deviceInfo) { $('pwSt').textContent = t('st_no_device'); return; }
+  try {
+    const r = await fetch(api('/api/settings'), {method: 'POST', body: settingsBody()});
+    if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? t('sy_key_bad') : 'HTTP ' + r.status);
+    await saveState(true);
+    $('pwSt').textContent = t('pw_saved');
+    await readInfo(); renderPowerBox();
+  } catch (e) { $('pwSt').textContent = t('st_err', {e: e.message}); }
 }
 // ---------- Showdown import ----------
 // Export format: "Nick (Species) (M) @ Item", "Ability: X", "Level: 50", "Shiny: Yes",
@@ -3292,7 +3768,7 @@ function renderBadgeBox() {
 
 // ---------- sprite style gallery ----------
 function buildStyleBox() {
-  const fs = document.querySelector('fieldset[data-group="display"]');
+  const fs = document.querySelector('fieldset[data-group="look"]');
   if (!fs || $('stbox')) return;
   const box = document.createElement('div'); box.className = 'picker'; box.id = 'stbox';
   box.innerHTML = `<h4 style="margin:0;font-size:13px" id="stT"></h4><div class="res" id="stRes" style="grid-template-columns:repeat(auto-fill,minmax(112px,1fr));max-height:none"></div>`;
@@ -3599,7 +4075,8 @@ async function sendAll() {
       qf: state.quietOn ? minutesOf(state.quietFrom) : -1, qt: state.quietOn ? minutesOf(state.quietTo) : -1,
       iv: [...entries.map(e => mins(e.key)), ...(daily.length ? [mins('daily')] : [])].join(','),
       flip: state.flip ? 1 : 0, dbl: Number(state.btnDouble) || 0, lng: Number(state.btnLong) || 0,
-      batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10))});
+      batlow: Math.round((Number(state.batLow) || 3.5) * 1000), fullevery: Math.max(1, Math.round(Number(state.fullEvery) || 10)),
+      ...dailySettings()});
     const r = await fetch(api('/api/rotation'), {method: 'POST', body});
     if (!r.ok) throw new Error(`${t('st_rotation')}: HTTP ${r.status}`);
     await saveState(true);
@@ -3651,6 +4128,7 @@ function setConnected() {
   const i = deviceInfo;
   const bat = i.batteryMv > 1000 ? ' · ' + t('st_bat', {v: (i.batteryMv / 1000).toFixed(2)}) : '';
   renderSystemBox();
+  renderPowerBox();
   setStatus(t('st_connected', {w: i.w, h: i.h, mode: panelLabel(state.panel), c: i.current + 1, n: i.entries ?? i.count}) + bat);
 }
 
@@ -3665,6 +4143,9 @@ function migrate(st) {
   if (!Array.isArray(st.collection)) st.collection = [];
   st.collection = st.collection.filter(c => c && c.data).map(c => ({id: c.id || Math.random().toString(36).slice(2), data: c.data}));
   if (!st.dailySeed) st.dailySeed = (Date.now() % 2147483647) || 1;
+  if (!PAGE_STYLES.includes(st.pageStyle)) st.pageStyle = 'classic';
+  if (!FRAME_KEYS.includes(st.frame) || (st.frame === 'custom' && !st.frameImg)) st.frame = 'none';
+  if (!st.pageFrame || typeof st.pageFrame !== 'object') st.pageFrame = {};
   return st;
 }
 
@@ -3723,6 +4204,8 @@ async function applyUiLang() {
   buildMonPickerBoxes();
   buildBadgeBox();
   buildStyleBox();
+  buildFrameBox();
+  buildPowerBox();
   buildSystemBox();
   buildSections();
 }

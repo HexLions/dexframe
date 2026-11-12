@@ -25,6 +25,8 @@ jobs:
         run: python tools/build_ui.py --check
       - name: Frame codec (web UI encoder against the firmware decoder)
         run: python tests/test_codec.py
+      - name: Pokémon of the day (web UI schedule against the firmware)
+        run: python tests/test_daily.py
       - name: Web UI against a fake board, every panel type
         run: |
           pip install playwright

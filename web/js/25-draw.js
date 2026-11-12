@@ -110,18 +110,35 @@ function raysBackdrop(ink, y0, strength, protect) {
   }
 }
 
-// Shared chrome: black header with name + page title, page dots at the bottom.
+// Thickness of the frame of the page being drawn (26-frames.js): the page dots sit above it.
+let chromeFrameT = 0;
+const setFrameForChrome = t => { chromeFrameT = t; };
+
+// Shared chrome: header with name + page title, page dots at the bottom.
+// Header styles: classic = black bar, accent = bar in the accent ink, light = white bar
+// with a rule, tab = black tab behind the name only, boxed = outlined white bar.
 function chrome(ctx, s, title, idx, total, name = s.name, gender = s.gender) {
   ctx.fillStyle = WHITE; ctx.fillRect(0, 0, W, H);
-  // page style: classic = black bar, accent = bar in the accent ink, light = white bar with a rule
-  const light = s.pageStyle === 'light', fg = light ? BLACK : WHITE;
-  ctx.fillStyle = light ? BLACK : s.pageStyle === 'accent' ? accent(s) : BLACK;
-  if (light) ctx.fillRect(0, 28, W, 2); else ctx.fillRect(0, 0, W, 30);
-  const titleW = title ? text(ctx, up(title), W - 10, 11, 8, true, fg, 'right') : 0;
-  const nw = text(ctx, up(name), 10, 7, 16, true, fg, 'left', W - titleW - 50);
+  const st = PAGE_STYLES.includes(s.pageStyle) ? s.pageStyle : 'classic';
+  const barFg = st === 'classic' || st === 'accent';
+  ctx.fillStyle = st === 'accent' ? accent(s) : BLACK;
+  if (barFg) ctx.fillRect(0, 0, W, 30);
+  else if (st === 'boxed') { box(ctx, 0, 0, W, 30, false); ctx.fillStyle = BLACK; ctx.fillRect(0, 28, W, 2); }
+  else ctx.fillRect(0, 28, W, 2);
+  const titleW = title ? measure(up(title), 8, true) : 0;
+  const nameMax = W - titleW - 50;
+  if (st === 'tab') {      // tab sized to the name, with a slanted end
+    const tw = Math.min(nameMax, measure(up(name), 16, true)) + (gender && gender !== '-' ? 22 : 0) + 20;
+    ctx.fillStyle = BLACK; ctx.fillRect(0, 0, tw, 30);
+    for (let k = 0; k < 14; k++) ctx.fillRect(tw + k, 2 * k + 2, 1, 28 - 2 * k);
+  }
+  const fg = barFg || st === 'tab' ? WHITE : BLACK;
+  if (title) text(ctx, up(title), W - 10, 11, 8, true, st === 'tab' ? BLACK : fg, 'right');
+  const nw = text(ctx, up(name), 10, 7, 16, true, fg, 'left', nameMax);
   if (gender && gender !== '-') drawGender(ctx, 10 + nw + 8, 8, gender, fg);
   const dotsX = W / 2 - (total * 12 - 4) / 2;
-  for (let i = 0; i < total; i++) box(ctx, dotsX + i * 12, 288, 8, 8, i === idx);
+  const dotsY = Math.min(288, H - chromeFrameT - 10);
+  for (let i = 0; i < total; i++) box(ctx, dotsX + i * 12, dotsY, 8, 8, i === idx);
 }
 
 // label (8px) above value (16px)

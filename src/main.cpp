@@ -18,6 +18,7 @@
 #include <WiFiClientSecure.h>
 #include "panel.h"
 #include "frame_codec.h"
+#include "daily_pick.h"
 #include "dexframe_types.h"
 #include "setup_page.h"
 // Optional compile-time defaults; Wi-Fi is normally set from the setup page (stored in NVS).
@@ -33,7 +34,7 @@
 #ifndef DEVICE_HOSTNAME
 #define DEVICE_HOSTNAME "dexframe"
 #endif
-#define FW_VERSION "1.6.0"
+#define FW_VERSION "1.7.0"
 #define API_LEVEL 2      // 2: DXF1 frames, panel descriptor in /api/info
 #define AP_NAME "DexFrame-Setup"
 
@@ -81,12 +82,16 @@ uint8_t actDouble = 0, actLong = 0; // button: 0 nothing, 1 next page, 2 previou
 int batLowMv = BAT_LOW_MV;
 int fullEvery = FULL_EVERY;         // partial refreshes of the counter before a full one
 uint32_t awakeMin = 3;        // stay online this long after a button wake / power-on
+int dailyAt = 0;              // Pokémon of the day: change time, minutes after local midnight
+int dailyEvery = 1;           // ... every N days
+bool dailyShuffle = false;    // ... in a new random order on every round of the pool
 String tz = DEFAULT_TZ;
 String wifiSsid, wifiPass, hostName, adminKey;
 
 // ---- survives deep sleep ----
 RTC_DATA_ATTR int rtcEntry = 0;        // rotation entry on screen
 RTC_DATA_ATTR int32_t rtcDrawnDay = -1;
+RTC_DATA_ATTR int32_t rtcDrawnDaily = -1;   // dailyIndex() when the daily page was drawn
 RTC_DATA_ATTR int rtcPartials = 0;
 RTC_DATA_ATTR time_t rtcLastSync = 0;
 RTC_DATA_ATTR time_t rtcPageDueAt = 0;   // epoch of the next page change while sleeping
@@ -136,12 +141,23 @@ String slotPath(int slot, const char* ext) { return "/f" + String(slot) + ext; }
 
 int entryCount() { return slotCount + (dailyCount > 0 ? 1 : 0); }
 
-// Rotation entry -> file slot. The daily entry picks one page of the pool per day.
+// Number of the current "Pokémon of the day" period: days counted from the change
+// time (dailyAt), grouped by dailyEvery. -1 = clock not set.
+int32_t dailyIndex() {
+  if (!timeValid()) return -1;
+  time_t t = time(nullptr) - (time_t)dailyAt * 60;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  int32_t d = daysFromCivil(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+  return d >= 0 ? d / dailyEvery : -1;
+}
+
+int dailyPick(int32_t n) { return dailyPickOf(n, dailyCount, dailyShuffle); }
+
+// Rotation entry -> file slot. The daily entry picks one page of the pool per period.
 int entrySlot(int entry) {
   if (entry < slotCount) return entry;
-  int32_t day = todayLocal();
-  int k = day >= 0 ? (int)(day % dailyCount) : 0;
-  return slotCount + k;
+  return slotCount + dailyPick(dailyIndex());
 }
 
 Overlay readOverlay(int slot) {
@@ -334,6 +350,7 @@ bool drawEntry(int entry, bool full) {
   free(planes);
   f.close();
   rtcDrawnDay = todayLocal();
+  if (entry >= slotCount) rtcDrawnDaily = dailyIndex();
   return true;
 }
 
@@ -479,23 +496,16 @@ void handleGlyphsDone() {
   server.send(204);
 }
 
-// POST /api/rotation  count interval [daily sleep awake tz now qf qt iv flip dbl lng batlow fullevery]
-void handleRotation() {
-  touch();
-  if (!authorized()) return;
-  int count = server.arg("count").toInt();
-  long interval = server.arg("interval").toInt();
-  int daily = server.hasArg("daily") ? server.arg("daily").toInt() : 0;
-  if (count < 1 || daily < 0 || count + daily > MAX_SLOTS || interval < 0 || interval > 24 * 60) {
-    server.send(400, "text/plain", "bad rotation");
-    return;
+// Settings shared by /api/rotation and /api/settings; each one only when present.
+//   sleep awake tz now qf qt iv flip dbl lng batlow fullevery dat dev dsh
+void applySettings() {
+  if (server.hasArg("sleep")) { sleepEnabled = server.arg("sleep") == "1"; prefs.putBool("sleep", sleepEnabled); }
+  if (server.hasArg("awake")) { awakeMin = constrain(server.arg("awake").toInt(), 1, 60); prefs.putUInt("awake", awakeMin); }
+  if (server.hasArg("interval")) {
+    long interval = server.arg("interval").toInt();
+    if (interval >= 0 && interval <= 24 * 60) { intervalMin = (uint32_t)interval; prefs.putUInt("interval", intervalMin); }
   }
-  slotCount = count;
-  dailyCount = daily;
-  intervalMin = (uint32_t)interval;
-  if (server.hasArg("sleep")) sleepEnabled = server.arg("sleep") == "1";
-  if (server.hasArg("awake")) awakeMin = constrain(server.arg("awake").toInt(), 1, 60);
-  if (server.hasArg("tz") && server.arg("tz").length() && server.arg("tz").length() < 64) tz = server.arg("tz");
+  if (server.hasArg("tz") && server.arg("tz").length() && server.arg("tz").length() < 64) { tz = server.arg("tz"); prefs.putString("tz", tz); }
   if (server.hasArg("now")) {          // browser clock: works without NTP (e.g. AP mode)
     long long now = atoll(server.arg("now").c_str());
     if (now > 1700000000LL) { struct timeval tv = {(time_t)now, 0}; settimeofday(&tv, nullptr); }
@@ -516,13 +526,44 @@ void handleRotation() {
   if (server.hasArg("lng")) { actLong = constrain(server.arg("lng").toInt(), 0, 3); prefs.putUChar("lng", actLong); }
   if (server.hasArg("batlow")) { batLowMv = constrain(server.arg("batlow").toInt(), 3000, 4200); prefs.putInt("batlow", batLowMv); }
   if (server.hasArg("fullevery")) { fullEvery = constrain(server.arg("fullevery").toInt(), 1, 100); prefs.putInt("fullevery", fullEvery); }
+  if (server.hasArg("dat")) { dailyAt = constrain(server.arg("dat").toInt(), 0, 1439); prefs.putInt("dat", dailyAt); }
+  if (server.hasArg("dev")) { dailyEvery = constrain(server.arg("dev").toInt(), 1, 30); prefs.putInt("dev", dailyEvery); }
+  if (server.hasArg("dsh")) { dailyShuffle = server.arg("dsh") == "1"; prefs.putBool("dsh", dailyShuffle); }
   applyTz();
+}
+
+// POST /api/settings  any of the applySettings() fields: no pages change, the page on
+// screen stays (redrawn only if what it shows changes: rotation, daily pick).
+void handleSettings() {
+  touch();
+  if (!authorized()) return;
+  bool flipWas = flipScreen;
+  int32_t pickWas = entrySlot(current);
+  applySettings();
+  rtcPageDueAt = 0;                 // the timer restarts with the new interval
+  lastSwitch = millis();
+  if (flipWas != flipScreen || entrySlot(current) != pickWas) { pendingDraw = true; pendingFull = true; }
+  server.send(204);
+}
+
+// POST /api/rotation  count interval [daily + applySettings() fields]
+void handleRotation() {
+  touch();
+  if (!authorized()) return;
+  int count = server.arg("count").toInt();
+  long interval = server.arg("interval").toInt();
+  int daily = server.hasArg("daily") ? server.arg("daily").toInt() : 0;
+  if (count < 1 || daily < 0 || count + daily > MAX_SLOTS || interval < 0 || interval > 24 * 60) {
+    server.send(400, "text/plain", "bad rotation");
+    return;
+  }
+  slotCount = count;
+  dailyCount = daily;
+  applySettings();
+  intervalMin = (uint32_t)interval;
+  prefs.putUInt("interval", intervalMin);
   prefs.putInt("count", slotCount);
   prefs.putInt("daily", dailyCount);
-  prefs.putUInt("interval", intervalMin);
-  prefs.putBool("sleep", sleepEnabled);
-  prefs.putUInt("awake", awakeMin);
-  prefs.putString("tz", tz);
   for (int s = slotCount + dailyCount; s < MAX_SLOTS; s++) {   // drop pages no longer used
     LittleFS.remove(slotPath(s, ".bin"));
     LittleFS.remove(slotPath(s, ".ov"));
@@ -590,7 +631,15 @@ void handleInfo() {
   String j = "{\"w\":" + String(W) + ",\"h\":" + String(H) +
              ",\"red\":" + (panelHasInk(2) ? "true" : "false") +
              ",\"api\":" + String(API_LEVEL) +
-             ",\"features\":\"pages,quiet,intervals,flip,button,thresholds,countdown\"" +
+             ",\"features\":\"pages,quiet,intervals,flip,button,thresholds,countdown,settings,daily2,refresh\"" +
+             ",\"dailyAt\":" + String(dailyAt) + ",\"dailyEvery\":" + String(dailyEvery) +
+             ",\"dailyShuffle\":" + (dailyShuffle ? "true" : "false") +
+             ",\"dailyIndex\":" + String(dailyIndex()) +
+             ",\"dailyPick\":" + String(dailyCount > 0 ? dailyPick(dailyIndex()) : -1) +
+             ",\"sleepOn\":" + (sleepEnabled ? "true" : "false") +
+             ",\"intervalMin\":" + String(intervalMin) +
+             ",\"batLowMv\":" + String(batLowMv) + ",\"fullEvery\":" + String(fullEvery) +
+             ",\"uptime\":" + String(millis() / 1000) +
              ",\"panel\":\"" PANEL_ID "\"" +
              ",\"panelName\":\"" PANEL_NAME "\"" +
              ",\"palette\":" + paletteJson() +
@@ -942,6 +991,12 @@ void startServer() {
   server.on("/api/frame", HTTP_POST, handleFrameDone, handleUpload);
   server.on("/api/glyphs", HTTP_POST, handleGlyphsDone, handleUpload);
   server.on("/api/rotation", HTTP_POST, handleRotation);
+  server.on("/api/settings", HTTP_POST, handleSettings);
+  server.on("/api/refresh", HTTP_POST, [] {      // full refresh of the page on screen
+    touch();
+    if (!authorized()) return;
+    rtcPartials = 0; pendingDraw = true; pendingFull = true; server.send(202);
+  });
   server.on("/api/next", HTTP_POST, [] { touch(); if (authorized()) { goTo(current + 1); server.send(202); } });
   server.on("/api/show", HTTP_POST, [] { touch(); if (authorized()) { goTo(server.arg("slot").toInt()); server.send(202); } });
   server.on("/api/ota", HTTP_POST, handleOtaDone, handleOtaUpload);
@@ -1007,13 +1062,15 @@ uint64_t secondsToNextWake() {
     rtcPageDueAt = quietEnd(rtcPageDueAt);      // no page change during the quiet hours
     s = rtcPageDueAt > now ? rtcPageDueAt - now : 1;
   }
-  // midnight: the counter changes, and so does the Pokémon of the day
-  if ((readOverlay(entrySlot(current)).ok || current >= slotCount) && timeValid()) {
+  // midnight: the counter changes; the Pokémon of the day changes at its own time
+  if (timeValid()) {
     time_t now = time(nullptr);
     struct tm lt;
     localtime_r(&now, &lt);
-    uint64_t toMidnight = (uint64_t)(24 * 3600 - (lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec)) + 60;
-    if (s == 0 || toMidnight < s) s = toMidnight;
+    long secOfDay = lt.tm_hour * 3600L + lt.tm_min * 60L + lt.tm_sec;
+    auto until = [&](long at) -> uint64_t { long d = at - secOfDay; if (d <= 0) d += 24 * 3600L; return (uint64_t)d + 60; };
+    if (readOverlay(entrySlot(current)).ok) { uint64_t m = until(0); if (s == 0 || m < s) s = m; }
+    if (current >= slotCount && dailyCount > 1) { uint64_t m = until(dailyAt * 60L); if (s == 0 || m < s) s = m; }
   }
   return s;   // 0 = no timer, button only
 }
@@ -1048,6 +1105,9 @@ void loadConfig() {
   actLong = prefs.getUChar("lng", 0);
   batLowMv = prefs.getInt("batlow", BAT_LOW_MV);
   fullEvery = prefs.getInt("fullevery", FULL_EVERY);
+  dailyAt = constrain(prefs.getInt("dat", 0), 0, 1439);
+  dailyEvery = constrain(prefs.getInt("dev", 1), 1, 30);
+  dailyShuffle = prefs.getBool("dsh", false);
   wifiSsid = prefs.getString("ssid", WIFI_SSID);
   wifiPass = prefs.getString("pass", WIFI_PASS);
   hostName = prefs.getString("host", DEVICE_HOSTNAME);
@@ -1085,8 +1145,12 @@ void setup() {
       rtcEntry = current;
       rtcPageDueAt = 0;
       drawEntry(current, true);
-    } else {
+    } else if (current >= slotCount && dailyIndex() != rtcDrawnDaily) {
+      drawEntry(current, true);    // a new Pokémon of the day
+    } else if (todayLocal() != rtcDrawnDay && readOverlay(entrySlot(current)).ok) {
       drawEntry(current, false);   // same page, refresh the day counter
+    } else {
+      rtcDrawnDay = todayLocal();  // nothing on screen changes
     }
     goToSleep();
   }
@@ -1155,10 +1219,13 @@ void loop() {
   if (millis() - lastDayCheck > 30000) {
     lastDayCheck = millis();
     int32_t today = todayLocal();
-    if (today >= 0 && today != rtcDrawnDay && !pendingDraw && !busy) {
-      pendingDraw = true;
-      // the daily page changes Pokémon at midnight -> full refresh; counters -> partial
-      pendingFull = current >= slotCount;
+    if (today >= 0 && !pendingDraw && !busy) {
+      if (current >= slotCount && dailyCount > 0 && dailyIndex() != rtcDrawnDaily) {
+        pendingDraw = true; pendingFull = true;          // a new Pokémon of the day
+      } else if (today != rtcDrawnDay) {
+        if (readOverlay(entrySlot(current)).ok) { pendingDraw = true; pendingFull = false; }   // counter: partial on B/W
+        else rtcDrawnDay = today;                        // nothing on this page depends on the date
+      }
     }
   }
 
